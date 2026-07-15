@@ -2,7 +2,8 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeScratchDir } from "@/test/helpers";
-import { DEFAULT_FORGE_CONFIG, forgeDir, initForge, readForgeConfig } from "./store";
+import { DEFAULT_FORGE_CONFIG, createTicket, forgeDir, initForge, listTickets, readForgeConfig, readTicket, setTicketStatus } from "./store";
+import type { TicketDraft } from "./store";
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -67,9 +68,6 @@ describe("forge store: init and config", () => {
     expect(await readForgeConfig(dir)).toEqual(DEFAULT_FORGE_CONFIG);
   });
 });
-
-import { createTicket, listTickets, readTicket, setTicketStatus } from "./store";
-import type { TicketDraft } from "./store";
 
 const DEV = "Test Dev <dev@example.com>";
 
