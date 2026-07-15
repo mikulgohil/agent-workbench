@@ -67,3 +67,71 @@ describe("forge store: init and config", () => {
     expect(await readForgeConfig(dir)).toEqual(DEFAULT_FORGE_CONFIG);
   });
 });
+
+import { createTicket, listTickets, readTicket, setTicketStatus } from "./store";
+import type { TicketDraft } from "./store";
+
+const DEV = "Test Dev <dev@example.com>";
+
+function draft(title: string): TicketDraft {
+  return {
+    type: "generic",
+    title,
+    inputs: { prompt: `${title} prompt` },
+    jiraRef: null,
+    source: "manual",
+  };
+}
+
+describe("forge store: tickets", () => {
+  let dir: string;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    ({ dir, cleanup } = await makeScratchDir());
+    await initForge(dir);
+  });
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  it("creates a canonical ticket in backlog and reads it back", async () => {
+    const ticket = await createTicket(dir, draft("Add button"), DEV);
+    expect(ticket.id).toMatch(/^tkt-/);
+    expect(ticket.status).toBe("backlog");
+    expect(ticket.createdBy).toBe(DEV);
+    expect(ticket.inputs.prompt).toBe("Add button prompt");
+    expect(ticket.source).toBe("manual");
+    expect(ticket.currentRunId).toBeNull();
+    expect(ticket.branchName).toBeNull();
+    expect(ticket.attachments).toEqual([]);
+    expect(ticket.checklist).toEqual([]);
+    expect(await readTicket(dir, ticket.id)).toEqual(ticket);
+  });
+
+  it("returns null for an unknown ticket", async () => {
+    expect(await readTicket(dir, "tkt-nope")).toBeNull();
+  });
+
+  it("lists tickets newest first", async () => {
+    const a = await createTicket(dir, draft("First"), DEV);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const b = await createTicket(dir, draft("Second"), DEV);
+    const titles = (await listTickets(dir)).map((t) => t.title);
+    expect(titles).toEqual(["Second", "First"]);
+    expect(a.createdAt <= b.createdAt).toBe(true);
+  });
+
+  it("updates status and bumps updatedAt", async () => {
+    const ticket = await createTicket(dir, draft("Move me"), DEV);
+    const updated = await setTicketStatus(dir, ticket.id, "running");
+    expect(updated.status).toBe("running");
+    expect(updated.updatedAt >= ticket.updatedAt).toBe(true);
+    expect((await readTicket(dir, ticket.id))?.status).toBe("running");
+  });
+
+  it("throws when updating an unknown ticket", async () => {
+    await expect(setTicketStatus(dir, "tkt-nope", "done")).rejects.toThrow(/tkt-nope/);
+  });
+});
