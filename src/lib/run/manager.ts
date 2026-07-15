@@ -65,20 +65,48 @@ export function startSimulatedRun(
   };
   registry().set(runId, record);
 
+  function applyEvent(event: RunEvent): void {
+    record.events.push(event);
+    record.view = reduceRun(record.view, event);
+    record.run = {
+      ...record.run,
+      state: record.view.state,
+      sessionId: event.kind === "run-started" ? event.sessionId : record.run.sessionId,
+    };
+    for (const listener of record.listeners) listener(event);
+  }
+
   record.done = (async (): Promise<void> => {
-    await setTicketStatus(projectDir, ticket.id, "running");
-    for await (const event of simulateRun({ runId, delayMs: options.delayMs ?? 0 })) {
-      record.events.push(event);
-      record.view = reduceRun(record.view, event);
-      record.run = {
-        ...record.run,
-        state: record.view.state,
-        sessionId: event.kind === "run-started" ? event.sessionId : record.run.sessionId,
-      };
-      for (const listener of record.listeners) listener(event);
+    try {
+      await setTicketStatus(projectDir, ticket.id, "running");
+      for await (const event of simulateRun({ runId, delayMs: options.delayMs ?? 0 })) {
+        applyEvent(event);
+      }
+      record.run = { ...record.run, endedAt: nowIso() };
+      await setTicketStatus(projectDir, ticket.id, "review");
+    } catch (error) {
+      // A failure here (simulator throw, or setTicketStatus I/O error) must
+      // still reach subscribers as a terminal event, or every SSE client
+      // waiting on this run hangs forever (isTerminalEvent only fires on a
+      // terminal phase-change, never on the error event alone).
+      const message = error instanceof Error ? error.message : String(error);
+      const nextSeq = (): number => (record.events.at(-1)?.seq ?? 0) + 1;
+      applyEvent({ seq: nextSeq(), at: nowIso(), kind: "error", message, recoverable: false });
+      applyEvent({
+        seq: nextSeq(),
+        at: nowIso(),
+        kind: "phase-change",
+        from: record.view.state,
+        to: "failed",
+      });
+      record.run = { ...record.run, endedAt: nowIso() };
+      try {
+        await setTicketStatus(projectDir, ticket.id, "failed");
+      } catch {
+        // Best-effort: a second failure here is a separate disk/config
+        // problem, already surfaced via the terminal event above.
+      }
     }
-    record.run = { ...record.run, endedAt: nowIso() };
-    await setTicketStatus(projectDir, ticket.id, "review");
   })();
 
   return record;

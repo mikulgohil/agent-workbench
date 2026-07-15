@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTicket, initForge, readTicket } from "@/lib/forge/store";
+import * as store from "@/lib/forge/store";
 import type { RunEvent, Ticket } from "@/lib/forge/types";
 import { makeScratchDir } from "@/test/helpers";
 import {
@@ -29,7 +30,26 @@ describe("run manager", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await cleanup();
+  });
+
+  it("emits a terminal event and resolves done when the background run throws", async () => {
+    vi.spyOn(store, "setTicketStatus").mockImplementationOnce(() => {
+      throw new Error("disk exploded");
+    });
+    const handle = startSimulatedRun(dir, ticket);
+    const received: RunEvent[] = [];
+    subscribe(handle.run.id, (event) => received.push(event));
+
+    await expect(handle.done).resolves.toBeUndefined();
+
+    expect(handle.run.state).toBe("failed");
+    const terminal = handle.events.at(-1);
+    expect(terminal?.kind).toBe("phase-change");
+    expect(terminal && terminal.kind === "phase-change" && terminal.to).toBe("failed");
+    expect(handle.events.some((event) => event.kind === "error")).toBe(true);
+    expect(received.at(-1)?.kind).toBe("phase-change");
   });
 
   it("runs to completion and moves the ticket from running to review", async () => {
