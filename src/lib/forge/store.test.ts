@@ -112,6 +112,11 @@ describe("forge store: tickets", () => {
     expect(await readTicket(dir, "tkt-nope")).toBeNull();
   });
 
+  it("returns null for a malformed id instead of resolving a path traversal", async () => {
+    expect(await readTicket(dir, "../../../etc/passwd")).toBeNull();
+    expect(await readTicket(dir, "tkt-../../../../etc")).toBeNull();
+  });
+
   it("lists tickets newest first", async () => {
     const a = await createTicket(dir, draft("First"), DEV);
     await new Promise((resolve) => setTimeout(resolve, 5));

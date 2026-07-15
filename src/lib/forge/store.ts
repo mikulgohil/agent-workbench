@@ -53,7 +53,10 @@ export async function initForge(projectDir: string): Promise<void> {
   if (!(await exists(configPath))) {
     await writeFile(configPath, `${JSON.stringify(DEFAULT_FORGE_CONFIG, null, 2)}\n`, "utf8");
   }
-  await writeFile(join(root, ".gitignore"), "local/\n", "utf8");
+  const gitignorePath = join(root, ".gitignore");
+  if (!(await exists(gitignorePath))) {
+    await writeFile(gitignorePath, "local/\n", "utf8");
+  }
 }
 
 export async function readForgeConfig(projectDir: string): Promise<ForgeConfig> {
@@ -79,6 +82,9 @@ export interface TicketDraft {
 function ticketPath(projectDir: string, ticketId: string): string {
   return join(forgeDir(projectDir), "tickets", ticketId, "ticket.json");
 }
+
+/** Ticket ids are always generated via newId("tkt"); anything else is invalid, not just suspicious. */
+const TICKET_ID_PATTERN = /^tkt-[0-9a-f]{8}$/;
 
 async function writeTicket(projectDir: string, ticket: Ticket): Promise<void> {
   await mkdir(join(forgeDir(projectDir), "tickets", ticket.id), { recursive: true });
@@ -118,6 +124,7 @@ export async function createTicket(
 }
 
 export async function readTicket(projectDir: string, ticketId: string): Promise<Ticket | null> {
+  if (!TICKET_ID_PATTERN.test(ticketId)) return null;
   const path = ticketPath(projectDir, ticketId);
   if (!(await exists(path))) return null;
   return JSON.parse(await readFile(path, "utf8")) as Ticket;
