@@ -1,8 +1,9 @@
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeScratchDir } from "@/test/helpers";
 import { DEFAULT_FORGE_CONFIG, createTicket, forgeDir, initForge, listTickets, readForgeConfig, readTicket, setTicketStatus } from "./store";
+import type { Ticket } from "./types";
 import type { TicketDraft } from "./store";
 
 async function exists(path: string): Promise<boolean> {
@@ -113,6 +114,40 @@ describe("forge store: tickets", () => {
   });
 
   it("returns null for a malformed id instead of resolving a path traversal", async () => {
+    // Create a real ticket.json file inside .forge/ but outside tickets/ directory
+    // to prove the id-pattern validation short-circuits before filesystem access.
+    // If the guard were removed, readTicket would successfully read this file.
+    const outsideDir = join(dir, ".forge", "outside");
+    await mkdir(outsideDir, { recursive: true });
+    const outsideTicket: Ticket = {
+      id: "fake-id",
+      type: "generic",
+      title: "Outside ticket",
+      status: "backlog",
+      jiraRef: null,
+      inputs: {},
+      attachments: [],
+      checklist: [],
+      gates: [],
+      planThenApprove: false,
+      currentRunId: null,
+      branchName: null,
+      createdBy: "test",
+      createdAt: "2026-07-16T00:00:00Z",
+      updatedAt: "2026-07-16T00:00:00Z",
+      source: "manual",
+    };
+    await writeFile(
+      join(outsideDir, "ticket.json"),
+      `${JSON.stringify(outsideTicket, null, 2)}\n`,
+      "utf8",
+    );
+
+    // Traversal id that resolves to the outside file if validation didn't prevent it
+    // join(dir, ".forge", "tickets", "../outside", "ticket.json") =>
+    // join(dir, ".forge", "outside", "ticket.json") which exists
+    expect(await readTicket(dir, "../outside")).toBeNull();
+    // Additional malformed ids
     expect(await readTicket(dir, "../../../etc/passwd")).toBeNull();
     expect(await readTicket(dir, "tkt-../../../../etc")).toBeNull();
   });
