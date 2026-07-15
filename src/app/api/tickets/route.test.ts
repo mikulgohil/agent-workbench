@@ -42,6 +42,19 @@ describe("POST /api/tickets", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a null json body with 400", async () => {
+    const res = await POST(
+      new Request("http://localhost/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "null",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/prompt/);
+  });
+
   it("creates a ticket, starts a simulated run, and returns both ids", async () => {
     const res = await POST(jsonRequest({ prompt: "Add a Button component" }));
     expect(res.status).toBe(201);

@@ -13,7 +13,8 @@ interface CreateTicketBody {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  const body = (await req.json().catch(() => ({}))) as CreateTicketBody;
+  const parsed: unknown = await req.json().catch(() => null);
+  const body = (typeof parsed === "object" && parsed !== null ? parsed : {}) as CreateTicketBody;
   const prompt = typeof body.prompt === "string" ? body.prompt : "";
   const type = typeof body.type === "string" && isTicketType(body.type) ? body.type : "generic";
   const draft = buildTicketDraft(prompt, type);
