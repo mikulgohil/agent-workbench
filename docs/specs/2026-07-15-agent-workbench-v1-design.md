@@ -208,12 +208,23 @@ Append-only JSONL formats are chosen deliberately: they minimize git merge confl
 - Shown per run, per ticket, and as a project total on the overview page.
 - **Per-developer monthly budget** (in `.forge/local/settings.json`): the app warns as spend approaches the cap and requires an explicit override past it. Budgets are personal guardrails, not enforcement.
 
+## UI interaction model (adopted from the Vibe Kanban evaluation, 2026-07-15)
+
+The hands-on Vibe Kanban evaluation (see docs/research/2026-07-15-prior-art-vibe-kanban-crystal.md) settled the interaction model.
+We adopt its proven shape and add our differentiators on top:
+
+- **Prompt-first creation**: the primary create surface is a "What would you like to work on?" box - type a prompt, hit Enter, a generic task starts with zero ceremony. This is how the adoption-bar success criterion is met in practice.
+- **Templates are opt-in structure**: picking a task type (figma-to-component, bug fix, improvement) expands the create box with that template's required fields and attaches its checklist, gates, and plan-then-approve setting. Structure per task type, not ceremony in front of every task.
+- **Three-pane layout**: left sidebar lists tasks grouped by **Needs Attention / Running / Review / Idle** (attention-first grouping is the primary navigation; a kanban board view is a later alternate view). Center: the Plan & Progress panel above the conversation/run stream. Right: Git panel (branch, diff stat), checklist + gate state, notes.
+- **Needs Attention is the hub state**: permission prompts, plan approvals, gate failures, and agent questions all move a task into this group - one glance shows where the human is needed.
+- **Terminal scope**: v1 ships a read-only command-output view (every command is streamed and audited anyway); a full interactive embedded terminal is deferred to v2.
+
 ## UI surfaces (v1 complete list)
 
 1. Project picker (launch screen).
-2. Dashboard / ticket board with live status of running tickets.
-3. New ticket form (template-driven fields per type).
-4. Ticket detail: chat, Plan & Progress panel, live run stream, plan approval, permission prompts, diff viewer, checklists, gates, visual compare, handover, run inspector, cost.
+2. Task sidebar grouped by Needs Attention / Running / Review / Idle, with live status; separate Chat activity lane.
+3. Prompt-first create box with optional template picker (template-driven fields per type).
+4. Task detail: chat, Plan & Progress panel, live run stream, plan approval, permission prompts, diff viewer, checklists, gates, visual compare, handover, run inspector, cost.
 5. Global chat.
 6. File explorer.
 7. Knowledge (project.md editor, lessons feed with revert, consolidate action).
