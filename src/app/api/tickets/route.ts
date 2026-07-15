@@ -22,9 +22,14 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: "prompt must not be empty" }, { status: 400 });
   }
 
-  const projectDir = getProjectDir();
-  await initForge(projectDir);
-  const ticket = await createTicket(projectDir, draft, await resolveIdentity());
-  const handle = startSimulatedRun(projectDir, ticket, { delayMs: getSimDelayMs() });
-  return Response.json({ ticketId: ticket.id, runId: handle.run.id }, { status: 201 });
+  try {
+    const projectDir = getProjectDir();
+    await initForge(projectDir);
+    const ticket = await createTicket(projectDir, draft, await resolveIdentity(projectDir));
+    const handle = startSimulatedRun(projectDir, ticket, { delayMs: getSimDelayMs() });
+    return Response.json({ ticketId: ticket.id, runId: handle.run.id }, { status: 201 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 500 });
+  }
 }
