@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import type { RunEvent } from "@/lib/forge/types";
+import { SIMULATED_TODOS, collectRunEvents } from "@/lib/sim/simulator";
+import { initialRunView, reduceRun, type RunView } from "./reducer";
+
+const OPTS = { runId: "run-fixed" } as const;
+
+function fold(events: RunEvent[]): RunView {
+  return events.reduce(reduceRun, initialRunView("run-fixed"));
+}
+
+describe("reduceRun", () => {
+  it("folds a full simulated run into a completed view", async () => {
+    const view = fold(await collectRunEvents(OPTS));
+    expect(view.state).toBe("completed");
+    expect(view.runId).toBe("run-fixed");
+    expect(view.todos).toHaveLength(SIMULATED_TODOS.length);
+    expect(view.todos.every((todo) => todo.status === "completed")).toBe(true);
+    expect(view.gates).toHaveLength(3);
+    expect(view.cost.costUsd).toBeGreaterThan(0);
+    expect(view.lastMessage.length).toBeGreaterThan(0);
+  });
+
+  it("tracks the in_progress todo mid-run", async () => {
+    const events = await collectRunEvents(OPTS);
+    const secondActive = events.findIndex(
+      (e) => e.kind === "todo-update" && e.todos[1]?.status === "in_progress",
+    );
+    const view = fold(events.slice(0, secondActive + 1));
+    expect(view.state).toBe("executing");
+    expect(view.todos[0]?.status).toBe("completed");
+    expect(view.todos[1]?.status).toBe("in_progress");
+    expect(view.todos[2]?.status).toBe("pending");
+  });
+
+  it("starts preparing and follows phase-change events", () => {
+    const start = initialRunView("run-x");
+    expect(start.state).toBe("preparing");
+    const after = reduceRun(start, {
+      kind: "phase-change",
+      seq: 1,
+      at: "2026-01-01T00:00:01.000Z",
+      from: "preparing",
+      to: "planning",
+    });
+    expect(after.state).toBe("planning");
+  });
+
+  it("does not mutate the previous view", () => {
+    const start = initialRunView("run-x");
+    const frozen = JSON.stringify(start);
+    reduceRun(start, { kind: "message", seq: 1, at: "2026-01-01T00:00:01.000Z", text: "hello" });
+    expect(JSON.stringify(start)).toBe(frozen);
+  });
+});
