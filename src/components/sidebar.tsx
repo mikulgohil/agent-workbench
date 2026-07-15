@@ -28,7 +28,7 @@ export async function Sidebar(): Promise<ReactElement> {
       ) : (
         SIDEBAR_GROUPS.map((group) => (
           <section key={group}>
-            <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+            <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-400">
               {SIDEBAR_GROUP_LABELS[group]} ({groups[group].length})
             </h2>
             <ul className="space-y-1">

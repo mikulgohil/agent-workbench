@@ -44,7 +44,7 @@ export function CreateBox(): ReactElement {
         placeholder="What would you like to work on?"
         rows={3}
         aria-label="Task prompt"
-        className="w-full resize-none rounded-lg border border-zinc-700 bg-zinc-900 p-3 text-sm outline-none focus:border-zinc-500"
+        className="w-full resize-none rounded-lg border border-zinc-700 bg-zinc-900 p-3 text-sm outline-none focus:border-zinc-500 focus:ring-2 focus:ring-zinc-400"
       />
       {error ? (
         <p role="alert" className="text-sm text-red-400">
