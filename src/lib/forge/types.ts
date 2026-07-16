@@ -3,9 +3,10 @@
  *
  * CANONICAL SOURCE: docs/blueprint/05-data-model.md.
  * Every name and field here matches that document exactly; later phases
- * extend this file with the remaining canonical types (RunSummary,
- * Lesson, TaskTemplate, ...) instead of renaming anything. AuditEvent
- * was added in Phase 2 Task 9.
+ * extend this file with the remaining canonical types (Lesson,
+ * TaskTemplate, ...) instead of renaming anything. AuditEvent was added
+ * in Phase 2 Task 9; RunSummary and its dependent types (FileTouch,
+ * CommandRecord, FileChangeKind) were added in the Phase 2 addendum.
  *
  * Design notes:
  * - String-literal unions (not enums) keep every type JSON-serializable.
@@ -307,6 +308,50 @@ export type RunEvent = RunEventBase &
 /** A run ends when a phase-change lands in one of the four terminal states. */
 export function isTerminalEvent(event: RunEvent): boolean {
   return event.kind === "phase-change" && isTerminalState(event.to);
+}
+
+/* ------------------------------------------------------------------ */
+/* Run summary - sanitized, committed record of a completed run        */
+/* .forge/tickets/<ticket-id>/runs/<run-id>.summary.json               */
+/* ------------------------------------------------------------------ */
+
+export const FILE_CHANGE_KINDS = ["added", "modified", "deleted"] as const;
+export type FileChangeKind = (typeof FILE_CHANGE_KINDS)[number];
+
+export interface FileTouch {
+  path: string;
+  kind: FileChangeKind;
+}
+
+export interface CommandRecord {
+  command: string;
+  source: BashCommandSource;
+  exitCode: number;
+  durationMs: number;
+}
+
+/**
+ * The sanitized run summary committed to git.
+ * Invariant: NEVER contains file contents, diffs, or snippets - only
+ * paths, commands, gate results, durations, and cost. This is what makes
+ * split transcript storage safe to commit (locked decision 11).
+ * Invariant: written exactly once, when `state` reaches a terminal value.
+ */
+export interface RunSummary {
+  id: string;
+  ticketId: string;
+  /** One of the four terminal RunState values. */
+  state: RunState;
+  filesTouched: FileTouch[];
+  commandsRun: CommandRecord[];
+  gates: Gate[];
+  iteration: number;
+  cost: CostRecord;
+  approval: ApprovalDecision | null;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  appVersion: string;
 }
 
 /* ------------------------------------------------------------------ */

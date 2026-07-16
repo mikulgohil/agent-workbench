@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  FILE_CHANGE_KINDS,
   RUN_EVENT_KINDS,
   RUN_STATES,
   TICKET_STATUSES,
   isTerminalEvent,
   isTerminalState,
   isTicketType,
+  type CommandRecord,
+  type FileTouch,
   type RunEvent,
+  type RunSummary,
 } from "./types";
 
 describe("forge domain types", () => {
@@ -61,5 +65,35 @@ describe("forge domain types", () => {
     expect(isTerminalEvent(done)).toBe(true);
     expect(isTerminalEvent(mid)).toBe(false);
     expect(isTerminalEvent(text)).toBe(false);
+  });
+});
+
+describe("RunSummary canonical types", () => {
+  it("defines the three file-change kinds in canonical order", () => {
+    expect(FILE_CHANGE_KINDS).toEqual(["added", "modified", "deleted"]);
+  });
+
+  it("constructs a fully-typed RunSummary with no diff/content fields", () => {
+    const filesTouched: FileTouch[] = [{ path: "src/x.ts", kind: "modified" }];
+    const commandsRun: CommandRecord[] = [];
+    const summary: RunSummary = {
+      id: "run-abc12345",
+      ticketId: "tkt-abc12345",
+      state: "completed",
+      filesTouched,
+      commandsRun,
+      gates: [],
+      iteration: 0,
+      cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+      approval: null,
+      startedAt: "2026-07-16T00:00:00.000Z",
+      endedAt: "2026-07-16T00:00:01.000Z",
+      durationMs: 1000,
+      appVersion: "0.1.0",
+    };
+    expect(summary.filesTouched[0]?.kind).toBe("modified");
+    // Sanitization invariant: the type has no field that could carry file contents.
+    expect(Object.keys(summary)).not.toContain("diff");
+    expect(Object.keys(summary)).not.toContain("content");
   });
 });
