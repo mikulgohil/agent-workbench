@@ -57,6 +57,19 @@ export interface StartRunOptions {
   delayMs?: number;
 }
 
+/**
+ * Human-readable text for a non-Bash tool's `permission-request`/audit
+ * "command" field, which - per the canonical `RunEvent` union - has no
+ * generic toolName/input fields, only a Bash-flavored `command: string`.
+ * This is display text only (never parsed), so a best-effort description
+ * is fine: prefer the file the tool targets when one is present, else
+ * fall back to the bare tool name.
+ */
+function describeToolRequest(toolName: string, input: Record<string, unknown>): string {
+  const target = input.file_path ?? input.path;
+  return typeof target === "string" ? `${toolName}(${target})` : toolName;
+}
+
 function applyEvent(record: RunRecord, event: RunEvent): void {
   record.events.push(event);
   record.view = reduceRun(record.view, event);
@@ -202,20 +215,55 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
           settingSources: ["user", "project", "local"],
           skills: "all",
           canUseTool: async (toolName, input, context) => {
+            if (toolName === "Bash") {
+              await bashGate.waitUntilReady();
+            }
+            const command = toolName === "Bash" && typeof input.command === "string" ? input.command : "";
+            const requestLabel = toolName === "Bash" ? command : describeToolRequest(toolName, input);
+
+            // broker.canUseTool synchronously registers the request into
+            // its `waiting` map (if it doesn't auto-allow/auto-deny)
+            // before this call expression finishes, since that function
+            // has no `await` on its pending-approval path - so checking
+            // broker.pending() right after this call, and BEFORE awaiting
+            // it, correctly reflects whether THIS request just became
+            // pending (docs/blueprint permission model: Task 12/13's
+            // approval-prompt UI can only ever appear if a
+            // permission-request event fires here).
+            const resultPromise = broker.canUseTool(toolName, input, context);
+            const isPending = broker.pending().some((pending) => pending.requestId === context.requestId);
+            if (isPending) {
+              applyEvent(record, {
+                kind: "permission-request",
+                seq: nextSeq(),
+                at: nowIso(),
+                requestId: context.requestId,
+                command: requestLabel,
+              });
+            }
+
+            const result = await resultPromise;
+
+            if (isPending) {
+              applyEvent(record, {
+                kind: "permission-decision",
+                seq: nextSeq(),
+                at: nowIso(),
+                requestId: context.requestId,
+                decision: result.behavior === "allow" ? "approved" : "denied",
+              });
+            }
+
             if (toolName !== "Bash") {
               // Task 9's canonical AuditEvent union only has Bash-specific
               // kinds (bash-command-{approved,allowlisted,denied}); there is
               // no generic "tool allowed/denied" kind for Read/Grep/Glob/
               // Write/etc. Rather than invent one, non-Bash decisions are
               // not audited yet - see the task report for discussion.
-              return broker.canUseTool(toolName, input, context);
+              return result;
             }
 
-            await bashGate.waitUntilReady();
-            const command = typeof input.command === "string" ? input.command : "";
             const isAllowlisted = resolveBashCommand(command, config.bashAllowlist).kind === "allowlisted";
-            const result = await broker.canUseTool(toolName, input, context);
-
             const kind =
               result.behavior === "deny"
                 ? "bash-command-denied"

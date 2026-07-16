@@ -33,13 +33,37 @@ vi.mock("@/lib/prepare", async (importOriginal) => {
 });
 
 // vi.hoisted so this is available inside the (hoisted) vi.mock factory
-// below without a TDZ issue.
-const { fakeAgentStream } = vi.hoisted(() => {
+// below without a TDZ issue. `setNextStream` lets an individual test swap
+// in a different fake message stream for its one call to `query()`
+// (consumed once, then the default stream applies again), without
+// needing to re-import the mocked SDK module inside the test itself (and
+// therefore without fighting the real module's strict `Query`-typed
+// `query()` signature - every fake stream here is intentionally loosely
+// typed, matching this file's existing `as never` fixture convention).
+const { setNextStream, defaultQueryImpl } = vi.hoisted(() => {
+  type FakeQueryParams = {
+    prompt: AsyncIterable<unknown>;
+    options: {
+      canUseTool: (
+        toolName: string,
+        input: Record<string, unknown>,
+        context: { requestId: string; signal: AbortSignal },
+      ) => Promise<unknown>;
+      abortController: AbortController;
+    };
+  };
+
+  let nextStream: ((params: FakeQueryParams) => AsyncGenerator<unknown>) | null = null;
+
+  function setNextStream(factory: (params: FakeQueryParams) => AsyncGenerator<unknown>): void {
+    nextStream = factory;
+  }
+
   /**
-   * A fake real-SDK message stream standing in for `query()`. Yields a
-   * realistic frame sequence (init, an assistant turn, a result frame,
-   * then a couple of post-result teardown-only system frames a real
-   * session can still emit), then - critically - does NOT end there.
+   * The default fake real-SDK message stream standing in for `query()`.
+   * Yields a realistic frame sequence (init, an assistant turn, a result
+   * frame, then a couple of post-result teardown-only system frames a
+   * real session can still emit), then - critically - does NOT end there.
    * Instead it drains `channel` (the exact `UserMessageChannel` instance
    * `startAgentRun` builds and passes as `prompt`) exactly the way a real
    * streaming-input session would: it keeps the connection open, waiting
@@ -49,7 +73,7 @@ const { fakeAgentStream } = vi.hoisted(() => {
    * close that never arrives - reproducing the real hang bug as a fast,
    * bounded-timeout unit test failure instead of a silent stuck ticket.
    */
-  async function* fakeAgentStream(channel: AsyncIterable<unknown>): AsyncGenerator<unknown> {
+  async function* defaultStream(channel: AsyncIterable<unknown>): AsyncGenerator<unknown> {
     yield {
       type: "system",
       subtype: "init",
@@ -104,11 +128,20 @@ const { fakeAgentStream } = vi.hoisted(() => {
     }
   }
 
-  return { fakeAgentStream };
+  function defaultQueryImpl(params: FakeQueryParams): AsyncGenerator<unknown> {
+    if (nextStream) {
+      const factory = nextStream;
+      nextStream = null;
+      return factory(params);
+    }
+    return defaultStream(params.prompt);
+  }
+
+  return { setNextStream, defaultQueryImpl };
 });
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
-  query: (params: { prompt: AsyncIterable<unknown> }) => fakeAgentStream(params.prompt),
+  query: (params: unknown) => defaultQueryImpl(params as Parameters<typeof defaultQueryImpl>[0]),
 }));
 
 describe("run manager", () => {
@@ -266,6 +299,140 @@ describe("startAgentRun channel lifecycle (mocked SDK, no real API calls)", () =
       const ticketAfter = await readTicket(dir, ticket.id);
       expect(ticketAfter?.status).toBe("review");
       expect(ticketAfter?.branchName).toBe("forge/mock-branch");
+    },
+    3000,
+  );
+});
+
+describe("startAgentRun permission-request/decision emission (mocked SDK, no real API calls)", () => {
+  let dir: string;
+  let cleanup: () => Promise<void>;
+  let ticket: Ticket;
+
+  const NON_ALLOWLISTED_COMMAND = "rm -rf /tmp/scratch-permission-test";
+
+  beforeEach(async () => {
+    resetRunRegistry();
+    ({ dir, cleanup } = await makeScratchDir());
+    await initForge(dir);
+    ticket = await createTicket(
+      dir,
+      { type: "generic", title: "Permission prompt check", inputs: { prompt: "Permission prompt check" }, jiraRef: null, source: "manual" },
+      DEV,
+    );
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await cleanup();
+  });
+
+  /**
+   * A fake stream that yields an assistant turn requesting a Bash command
+   * NOT in the allowlist, then - the way a real session actually behaves -
+   * calls the `canUseTool` callback it was given directly (nothing else in
+   * this mock would ever invoke it) and waits for it to resolve before
+   * continuing to the result frame. That resolution only happens once the
+   * test calls `handle.control.resolvePermission(...)`, exactly as the
+   * real approvals API route does.
+   */
+  async function* fakePermissionGatedStream(params: {
+    options: {
+      canUseTool: (
+        toolName: string,
+        input: Record<string, unknown>,
+        context: { requestId: string; signal: AbortSignal },
+      ) => Promise<unknown>;
+      abortController: AbortController;
+    };
+  }): AsyncGenerator<unknown> {
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: "sess-perm",
+      uuid: "up1",
+      cwd: "/tmp/mock-worktree",
+      tools: [],
+      model: "claude",
+      mcp_servers: [],
+      permissionMode: "default",
+      slash_commands: [],
+      skills: [],
+      output_style: "",
+      plugins: [],
+      apiKeySource: "user",
+      claude_code_version: "1.0.0",
+    };
+    yield {
+      type: "assistant",
+      message: {
+        id: "m-perm-1",
+        content: [{ type: "tool_use", id: "tu-perm-1", name: "Bash", input: { command: NON_ALLOWLISTED_COMMAND } }],
+        usage: { input_tokens: 8, output_tokens: 3 },
+      },
+      parent_tool_use_id: null,
+      uuid: "up2",
+      session_id: "sess-perm",
+    };
+
+    await params.options.canUseTool(
+      "Bash",
+      { command: NON_ALLOWLISTED_COMMAND },
+      { requestId: "perm-req-1", signal: params.options.abortController.signal },
+    );
+
+    yield {
+      type: "result",
+      subtype: "success",
+      result: "done",
+      is_error: false,
+      num_turns: 1,
+      duration_ms: 50,
+      duration_api_ms: 40,
+      total_cost_usd: 0.005,
+      usage: { input_tokens: 20, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      modelUsage: {},
+      permission_denials: [],
+      stop_reason: null,
+      uuid: "up3",
+      session_id: "sess-perm",
+    };
+  }
+
+  it(
+    "emits permission-request then permission-decision around a paused Bash approval, and the run still completes",
+    async () => {
+      setNextStream(fakePermissionGatedStream as never);
+      const config: ForgeConfig = DEFAULT_FORGE_CONFIG; // bashAllowlist has no entry matching NON_ALLOWLISTED_COMMAND
+      const handle = startAgentRun(dir, ticket, config);
+
+      await vi.waitFor(
+        () => {
+          expect(handle.events.some((event) => event.kind === "permission-request")).toBe(true);
+        },
+        { timeout: 2000, interval: 5 },
+      );
+
+      const request = handle.events.find(
+        (event): event is Extract<RunEvent, { kind: "permission-request" }> => event.kind === "permission-request",
+      );
+      expect(request).toBeDefined();
+      expect(request?.command).toBe(NON_ALLOWLISTED_COMMAND);
+      // Before the decision arrives, the reducer's derived view should show
+      // this as the pending prompt Task 13's UI reads.
+      expect(handle.view.pendingPermission).toEqual({ requestId: request?.requestId, command: NON_ALLOWLISTED_COMMAND });
+
+      // The same mechanism the real approvals API route uses.
+      handle.control?.resolvePermission(request!.requestId, "allow");
+
+      await handle.done;
+
+      const decision = handle.events.find(
+        (event): event is Extract<RunEvent, { kind: "permission-decision" }> => event.kind === "permission-decision",
+      );
+      expect(decision).toMatchObject({ requestId: request!.requestId, decision: "approved" });
+      expect(handle.view.pendingPermission).toBeNull();
+      expect(handle.run.state).toBe("completed");
     },
     3000,
   );
