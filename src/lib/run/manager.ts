@@ -18,6 +18,7 @@ import { appendAuditEvent } from "@/lib/audit";
 import { runGate } from "@/lib/gates";
 import { appendRunState } from "./persist";
 import { buildRunSummary, writeRunSummary } from "./summary";
+import type { CanUseTool, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 /**
  * In-memory registry of runs for the current app process.
@@ -195,7 +196,9 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
 
   record.done = (async (): Promise<void> => {
     let branch: string | null = null;
-    const lastGates: Gate[] = [];
+    let lastGates: Gate[] = [];
+    const planTracker = new PlanTracker();
+    const costTracker = new CostTracker();
     try {
       await setTicketStatus(projectDir, ticket.id, "running");
       const { path: worktreePath, branch: createdBranch } = await createWorktree(
@@ -238,124 +241,142 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
       // Lazily imported so this module never pulls the Agent SDK into a
       // bundle that could reach a Client Component (Global Constraints).
       const { query } = await import("@anthropic-ai/claude-agent-sdk");
-      const planTracker = new PlanTracker();
-      const costTracker = new CostTracker();
 
-      const run = query({
-        prompt: channel,
-        options: {
-          cwd: worktreePath,
-          abortController,
-          settingSources: ["user", "project", "local"],
-          skills: "all",
-          canUseTool: async (toolName, input, context) => {
-            if (toolName === "Bash") {
-              await bashGate.waitUntilReady();
-            }
-            const command = toolName === "Bash" && typeof input.command === "string" ? input.command : "";
-            const requestLabel = toolName === "Bash" ? command : describeToolRequest(toolName, input);
+      // ONE canUseTool definition, shared by the initial session and every
+      // gate-fix resume session (DRY - options are per-process and must be
+      // re-passed on every query() call; guide 4.2).
+      const canUseTool: CanUseTool = async (toolName, input, context) => {
+        if (toolName === "Bash") {
+          await bashGate.waitUntilReady();
+        }
+        const command = toolName === "Bash" && typeof input.command === "string" ? input.command : "";
+        const requestLabel = toolName === "Bash" ? command : describeToolRequest(toolName, input);
 
-            // broker.canUseTool synchronously registers the request into
-            // its `waiting` map (if it doesn't auto-allow/auto-deny)
-            // before this call expression finishes, since that function
-            // has no `await` on its pending-approval path - so checking
-            // broker.pending() right after this call, and BEFORE awaiting
-            // it, correctly reflects whether THIS request just became
-            // pending (docs/blueprint permission model: Task 12/13's
-            // approval-prompt UI can only ever appear if a
-            // permission-request event fires here).
-            const resultPromise = broker.canUseTool(toolName, input, context);
-            const isPending = broker.pending().some((pending) => pending.requestId === context.requestId);
-            if (isPending) {
-              applyEvent(record, {
-                kind: "permission-request",
-                seq: nextSeq(),
-                at: nowIso(),
-                requestId: context.requestId,
-                command: requestLabel,
-              });
-            }
+        // broker.canUseTool synchronously registers the request into
+        // its `waiting` map (if it doesn't auto-allow/auto-deny)
+        // before this call expression finishes, since that function
+        // has no `await` on its pending-approval path - so checking
+        // broker.pending() right after this call, and BEFORE awaiting
+        // it, correctly reflects whether THIS request just became
+        // pending (docs/blueprint permission model: Task 12/13's
+        // approval-prompt UI can only ever appear if a
+        // permission-request event fires here).
+        const resultPromise = broker.canUseTool(toolName, input, context);
+        const isPending = broker.pending().some((pending) => pending.requestId === context.requestId);
+        if (isPending) {
+          applyEvent(record, {
+            kind: "permission-request",
+            seq: nextSeq(),
+            at: nowIso(),
+            requestId: context.requestId,
+            command: requestLabel,
+          });
+        }
 
-            const result = await resultPromise;
+        const result = await resultPromise;
 
-            if (isPending) {
-              applyEvent(record, {
-                kind: "permission-decision",
-                seq: nextSeq(),
-                at: nowIso(),
-                requestId: context.requestId,
-                decision: result.behavior === "allow" ? "approved" : "denied",
-              });
-            }
+        if (isPending) {
+          applyEvent(record, {
+            kind: "permission-decision",
+            seq: nextSeq(),
+            at: nowIso(),
+            requestId: context.requestId,
+            decision: result.behavior === "allow" ? "approved" : "denied",
+          });
+        }
 
-            if (toolName !== "Bash") {
-              // Task 9's canonical AuditEvent union only has Bash-specific
-              // kinds (bash-command-{approved,allowlisted,denied}); there is
-              // no generic "tool allowed/denied" kind for Read/Grep/Glob/
-              // Write/etc. Rather than invent one, non-Bash decisions are
-              // not audited yet - see the task report for discussion.
-              return result;
-            }
+        if (toolName !== "Bash") {
+          // Task 9's canonical AuditEvent union only has Bash-specific
+          // kinds (bash-command-{approved,allowlisted,denied}); there is
+          // no generic "tool allowed/denied" kind for Read/Grep/Glob/
+          // Write/etc. Rather than invent one, non-Bash decisions are
+          // not audited yet - see the task report for discussion.
+          return result;
+        }
 
-            const isAllowlisted = resolveBashCommand(command, config.bashAllowlist).kind === "allowlisted";
-            const kind =
-              result.behavior === "deny"
-                ? "bash-command-denied"
-                : isAllowlisted
-                  ? "bash-command-allowlisted"
-                  : "bash-command-approved";
-            await appendAuditEvent(projectDir, {
-              user: ticket.createdBy,
-              ticketId: ticket.id,
-              kind,
-              runId,
-              command,
-              detail: `${kind}: ${command}`,
-            });
-            return result;
-          },
-        },
+        const isAllowlisted = resolveBashCommand(command, config.bashAllowlist).kind === "allowlisted";
+        const kind =
+          result.behavior === "deny"
+            ? "bash-command-denied"
+            : isAllowlisted
+              ? "bash-command-allowlisted"
+              : "bash-command-approved";
+        await appendAuditEvent(projectDir, {
+          user: ticket.createdBy,
+          ticketId: ticket.id,
+          kind,
+          runId,
+          command,
+          detail: `${kind}: ${command}`,
+        });
+        return result;
+      };
+
+      const buildQueryOptions = (resume: string | null): NonNullable<Parameters<typeof query>[0]["options"]> => ({
+        cwd: worktreePath,
+        abortController,
+        settingSources: ["user", "project", "local"],
+        skills: "all",
+        canUseTool,
+        ...(resume ? { resume } : {}),
       });
+
+      // Consume ONE query() session's message stream until its result
+      // frame, applying every mapped RunEvent, plan update, and cost
+      // update, then closing the channel (idempotent) - the same handling
+      // for the initial session and every gate-fix resume session.
+      const consumeSession = async (run: AsyncIterable<SDKMessage>, sessionChannel: UserMessageChannel): Promise<void> => {
+        for await (const message of run) {
+          for (const event of mapSdkMessages(message, nextSeq)) {
+            applyEvent(record, event);
+          }
+          if (planTracker.ingest(message)) {
+            applyEvent(record, { kind: "todo-update", seq: nextSeq(), at: nowIso(), todos: planTracker.todos() });
+          }
+          const cost = costTracker.ingest(message);
+          if (cost) {
+            applyEvent(record, { kind: "cost-update", seq: nextSeq(), at: nowIso(), cumulative: cost });
+          }
+          if (message.type === "result") {
+            // A streaming-input session stays open indefinitely waiting for
+            // more input on the channel - it does not end on its own just
+            // because one turn finished (docs/blueprint/02-agent-sdk-guide.md:
+            // "keep the stream open while a canUseTool prompt is pending; do
+            // not close() the channel until you have seen the result frame").
+            // Close - and stop consuming - as soon as the result frame is
+            // seen, from inside this loop. Closing only after the loop (as
+            // this used to) is a deadlock: the loop can't exit until the
+            // channel closes, and the channel never closed because the loop
+            // never exited. Breaking here (rather than draining further)
+            // also avoids depending on the SDK's iterator eventually
+            // completing after teardown-only frames (hook_started/
+            // hook_progress/hook_response) that can still arrive post-result;
+            // those carry no plan/cost/RunEvent data this run needs.
+            sessionChannel.close();
+            return;
+          }
+        }
+        // Safety net for any exit path that ends without a result frame.
+        sessionChannel.close();
+      };
+
+      const runGatesOnce = async (gatesWorktreePath: string): Promise<Gate[]> => {
+        const gates: Gate[] = [];
+        for (const gateName of ticket.gates) {
+          const scriptName = config.scripts[gateName as keyof typeof config.scripts] ?? gateName;
+          const gate = await runGate(gatesWorktreePath, gateName, scriptName, config.packageManager);
+          applyEvent(record, { kind: "gate-result", seq: nextSeq(), at: nowIso(), gate });
+          gates.push(gate);
+        }
+        return gates;
+      };
+
+      const run = query({ prompt: channel, options: buildQueryOptions(null) });
 
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "executing" });
 
-      for await (const message of run) {
-        for (const event of mapSdkMessages(message, nextSeq)) {
-          applyEvent(record, event);
-        }
-
-        if (planTracker.ingest(message)) {
-          applyEvent(record, { kind: "todo-update", seq: nextSeq(), at: nowIso(), todos: planTracker.todos() });
-        }
-        const cost = costTracker.ingest(message);
-        if (cost) {
-          applyEvent(record, { kind: "cost-update", seq: nextSeq(), at: nowIso(), cumulative: cost });
-        }
-
-        if (message.type === "result") {
-          // A streaming-input session stays open indefinitely waiting for
-          // more input on the channel - it does not end on its own just
-          // because one turn finished (docs/blueprint/02-agent-sdk-guide.md:
-          // "keep the stream open while a canUseTool prompt is pending; do
-          // not close() the channel until you have seen the result frame").
-          // Close - and stop consuming - as soon as the result frame is
-          // seen, from inside this loop. Closing only after the loop (as
-          // this used to) is a deadlock: the loop can't exit until the
-          // channel closes, and the channel never closed because the loop
-          // never exited. Breaking here (rather than draining further)
-          // also avoids depending on the SDK's iterator eventually
-          // completing after teardown-only frames (hook_started/
-          // hook_progress/hook_response) that can still arrive post-result;
-          // those carry no plan/cost/RunEvent data this run needs.
-          channel.close();
-          break;
-        }
-      }
-      // Safety net for any exit path that reaches here without ever seeing
-      // a result frame (e.g. the run's iterator ending early for another
-      // reason); close() is idempotent, so this is a no-op on the normal
-      // success path above.
-      channel.close();
+      await consumeSession(run, channel);
+      costTracker.sealSession();
 
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "gates-running" });
       await appendRunState(projectDir, ticket.id, runId, {
@@ -365,12 +386,7 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
         branch,
         iteration: record.run.iteration,
       });
-      for (const gateName of ticket.gates) {
-        const scriptName = config.scripts[gateName as keyof typeof config.scripts] ?? gateName;
-        const gate = await runGate(worktreePath, gateName, scriptName, config.packageManager);
-        applyEvent(record, { kind: "gate-result", seq: nextSeq(), at: nowIso(), gate });
-        lastGates.push(gate);
-      }
+      lastGates = await runGatesOnce(worktreePath);
 
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: "gates-running", to: "completed" });
       await commitAll(worktreePath, `${ticket.type}: ${ticket.title}\n\nTicket: ${ticket.id}`);
