@@ -16,6 +16,7 @@ import { PlanTracker } from "@/lib/session/plan-tracker";
 import { CostTracker } from "@/lib/session/cost-tracker";
 import { appendAuditEvent } from "@/lib/audit";
 import { runGate } from "@/lib/gates";
+import { appendRunState } from "./persist";
 
 /**
  * In-memory registry of runs for the current app process.
@@ -113,6 +114,13 @@ export function startSimulatedRun(
         applyEvent(record, event);
       }
       record.run = { ...record.run, endedAt: nowIso() };
+      await appendRunState(projectDir, ticket.id, runId, {
+        state: record.run.state,
+        sessionId: record.run.sessionId,
+        worktreePath: record.run.worktreePath,
+        branch: null,
+        iteration: record.run.iteration,
+      });
       await setTicketStatus(projectDir, ticket.id, "review");
     } catch (error) {
       // A failure here (simulator throw, or setTicketStatus I/O error) must
@@ -124,6 +132,16 @@ export function startSimulatedRun(
       applyEvent(record, { kind: "error", seq, at: nowIso(), message, recoverable: false });
       applyEvent(record, { kind: "phase-change", seq: seq + 1, at: nowIso(), from: record.view.state, to: "failed" });
       record.run = { ...record.run, endedAt: nowIso() };
+      await appendRunState(projectDir, ticket.id, runId, {
+        state: record.run.state,
+        sessionId: record.run.sessionId,
+        worktreePath: record.run.worktreePath,
+        branch: null,
+        iteration: record.run.iteration,
+      }).catch(() => {
+        // Best-effort: a persistence failure here must not block the
+        // already-in-progress failure handling below.
+      });
       try {
         await setTicketStatus(projectDir, ticket.id, "failed");
       } catch {
@@ -186,6 +204,13 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
       );
       branch = createdBranch;
       record.run = { ...record.run, worktreePath };
+      await appendRunState(projectDir, ticket.id, runId, {
+        state: record.run.state,
+        sessionId: record.run.sessionId,
+        worktreePath: record.run.worktreePath,
+        branch,
+        iteration: record.run.iteration,
+      });
 
       void startInstall(worktreePath, config.packageManager).then((result) => {
         bashGate.markReady();
@@ -322,6 +347,13 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
       channel.close();
 
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "gates-running" });
+      await appendRunState(projectDir, ticket.id, runId, {
+        state: record.run.state,
+        sessionId: record.run.sessionId,
+        worktreePath: record.run.worktreePath,
+        branch,
+        iteration: record.run.iteration,
+      });
       for (const gateName of ticket.gates) {
         const scriptName = config.scripts[gateName as keyof typeof config.scripts] ?? gateName;
         const gate = await runGate(worktreePath, gateName, scriptName, config.packageManager);
@@ -331,12 +363,29 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: "gates-running", to: "completed" });
       await commitAll(worktreePath, `${ticket.type}: ${ticket.title}\n\nTicket: ${ticket.id}`);
       record.run = { ...record.run, endedAt: nowIso() };
+      await appendRunState(projectDir, ticket.id, runId, {
+        state: record.run.state,
+        sessionId: record.run.sessionId,
+        worktreePath: record.run.worktreePath,
+        branch,
+        iteration: record.run.iteration,
+      });
       await setTicketStatus(projectDir, ticket.id, "review", { branchName: branch });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       applyEvent(record, { kind: "error", seq: nextSeq(), at: nowIso(), message, recoverable: false });
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "failed" });
       record.run = { ...record.run, endedAt: nowIso() };
+      await appendRunState(projectDir, ticket.id, runId, {
+        state: record.run.state,
+        sessionId: record.run.sessionId,
+        worktreePath: record.run.worktreePath,
+        branch,
+        iteration: record.run.iteration,
+      }).catch(() => {
+        // Best-effort: a persistence failure here must not block the
+        // already-in-progress failure handling below.
+      });
       if (record.run.worktreePath) {
         await removeWorktree(projectDir, record.run.worktreePath).catch(() => {});
       }

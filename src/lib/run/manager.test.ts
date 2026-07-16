@@ -4,6 +4,7 @@ import * as store from "@/lib/forge/store";
 import type { ForgeConfig, RunEvent, Ticket } from "@/lib/forge/types";
 import { DEFAULT_FORGE_CONFIG } from "@/lib/forge/store";
 import { makeScratchDir } from "@/test/helpers";
+import { readLastRunState } from "./persist";
 import {
   findLatestRunForTicket,
   getRun,
@@ -192,6 +193,16 @@ describe("run manager", () => {
     expect(handle.run.endedAt).not.toBeNull();
     expect(handle.events.at(-1)?.kind).toBe("phase-change");
     expect((await readTicket(dir, ticket.id))?.status).toBe("review");
+  });
+
+  // Reuses startSimulatedRun since this exercises the persistence wiring
+  // (appendRunState calls), not the SDK path - see startAgentRun's
+  // equivalent coverage via the channel-lifecycle test below.
+  it("persists a terminal run-state line readable via readLastRunState once the run completes", async () => {
+    const handle = startSimulatedRun(dir, ticket);
+    await handle.done;
+    const last = await readLastRunState(dir, ticket.id, handle.run.id);
+    expect(last).toMatchObject({ type: "state", state: handle.run.state });
   });
 
   it("replays buffered events to late subscribers", async () => {
