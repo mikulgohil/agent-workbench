@@ -247,7 +247,30 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
         if (cost) {
           applyEvent(record, { kind: "cost-update", seq: nextSeq(), at: nowIso(), cumulative: cost });
         }
+
+        if (message.type === "result") {
+          // A streaming-input session stays open indefinitely waiting for
+          // more input on the channel - it does not end on its own just
+          // because one turn finished (docs/blueprint/02-agent-sdk-guide.md:
+          // "keep the stream open while a canUseTool prompt is pending; do
+          // not close() the channel until you have seen the result frame").
+          // Close - and stop consuming - as soon as the result frame is
+          // seen, from inside this loop. Closing only after the loop (as
+          // this used to) is a deadlock: the loop can't exit until the
+          // channel closes, and the channel never closed because the loop
+          // never exited. Breaking here (rather than draining further)
+          // also avoids depending on the SDK's iterator eventually
+          // completing after teardown-only frames (hook_started/
+          // hook_progress/hook_response) that can still arrive post-result;
+          // those carry no plan/cost/RunEvent data this run needs.
+          channel.close();
+          break;
+        }
       }
+      // Safety net for any exit path that reaches here without ever seeing
+      // a result frame (e.g. the run's iterator ending early for another
+      // reason); close() is idempotent, so this is a no-op on the normal
+      // success path above.
       channel.close();
 
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "gates-running" });
