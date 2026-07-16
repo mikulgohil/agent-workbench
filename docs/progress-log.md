@@ -43,3 +43,8 @@ See `.superpowers/sdd/progress.md` for the live per-task ledger.
 ### Where to pick this up
 
 Read this file top to bottom for the story, then `docs/superpowers/plans/2026-07-16-phase-2-real-execution-core.md` for the actual next work. The app is fully usable today against the simulator (`FORGE_PROJECT_DIR=<scratch dir> pnpm dev`, no API key needed) - Phase 2 is what makes it run real Claude Agent SDK sessions instead of a scripted fake.
+
+### Session boundary (2026-07-16)
+
+This overnight session ended here, cleanly - everything above is committed on `main`, working tree clean, 57/57 tests passing. The next session (a fresh session, not a continuation of this one) picks up Phase 2 from `docs/superpowers/plans/2026-07-16-phase-2-real-execution-core.md`, Task 1.
+Reminder for whoever/whatever starts that session: Tasks 1-4 of that plan are safe to run unattended (pure local logic, no API calls); Task 5 onward spawns real Agent SDK sessions against `ANTHROPIC_API_KEY` and spends real money - do not let that run unattended, only with the developer present.
