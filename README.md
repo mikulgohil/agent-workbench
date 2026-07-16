@@ -10,24 +10,6 @@ Team standardization is the whole point: knowledge, checklists, templates, audit
 
 ---
 
-## Screenshots
-
-Create a task from a prompt - a ticket is created and a run streams live:
-
-![Create a task](docs/screenshots/01-home-create-task.jpg)
-
-The Plan & Progress panel streams the agent's todos, tool calls, cost, and quality gates in real time:
-
-![Live plan and progress](docs/screenshots/02-live-plan-progress.jpg)
-
-Every action is on the record - the raw event stream, and an explicit approve/reject decision before anything lands:
-
-![Event stream and review](docs/screenshots/03-event-stream-and-review.jpg)
-
-> These are captured against the built-in deterministic **simulator** (no API key, no spend), which emits the exact same event protocol the real Agent SDK engine produces - so the UI is identical whether a run is real or simulated.
-
----
-
 ## Why this exists
 
 Terminal coding agents are powerful but lonely: each developer runs them their own way, the work is invisible until a PR appears, quality checks are ad-hoc, and nothing a teammate learned yesterday reaches you today.
@@ -158,7 +140,6 @@ See the per-phase plans in `docs/superpowers/plans/` and the "Known gaps" sectio
 | `docs/research/` | Prior-art report and the worktree install-cost spike |
 | `docs/superpowers/plans/` | Step-level TDD implementation plans, one per phase |
 | `docs/progress-log.md` | Session-by-session log of what was built and why |
-| `docs/screenshots/` | The images in this README |
 
 ---
 
