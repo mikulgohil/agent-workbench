@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTicket, initForge, readTicket, setTicketStatus } from "@/lib/forge/store";
 import { resetRunRegistry } from "@/lib/run/manager";
+import { readAuditEvents } from "@/lib/audit";
 import { makeScratchDir } from "@/test/helpers";
 import { POST } from "./route";
 
@@ -38,6 +39,23 @@ describe("POST /api/tickets/[id]/reject", () => {
     const res = await POST(new Request("http://localhost/x", { method: "POST" }), { params: Promise.resolve({ id: ticket.id }) });
     expect(res.status).toBe(200);
     expect((await readTicket(dir, ticket.id))?.status).toBe("rejected");
+    vi.unstubAllEnvs();
+    await cleanup();
+  });
+
+  it("appends a run-rejected audit event", async () => {
+    resetRunRegistry();
+    const { dir, cleanup } = await makeScratchDir();
+    vi.stubEnv("FORGE_PROJECT_DIR", dir);
+    await initForge(dir);
+    let ticket = await createTicket(dir, { type: "generic", title: "t", inputs: { prompt: "t" }, jiraRef: null, source: "manual" }, "Dev <d@e.com>");
+    ticket = await setTicketStatus(dir, ticket.id, "review");
+    const res = await POST(new Request("http://localhost/x", { method: "POST" }), { params: Promise.resolve({ id: ticket.id }) });
+    expect(res.status).toBe(200);
+    const yyyymm = new Date().toISOString().slice(0, 7);
+    const events = await readAuditEvents(dir, yyyymm);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: "run-rejected", runId: "", user: ticket.createdBy, ticketId: ticket.id });
     vi.unstubAllEnvs();
     await cleanup();
   });

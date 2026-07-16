@@ -61,4 +61,23 @@ describe("PlanTracker", () => {
       tracker.ingest({ type: "assistant", message: { id: "m", content: [{ type: "text", text: "hi" }], usage: { input_tokens: 1, output_tokens: 1 } }, parent_tool_use_id: null, uuid: "x", session_id: "s1" } as never),
     ).toBe(false);
   });
+
+  it("todos() returns a snapshot that later status changes do not mutate", () => {
+    const tracker = new PlanTracker();
+    tracker.ingest(taskCreateFrame("tu-3", "Write the report"));
+    tracker.ingest(toolResultFrame("tu-3", "task-3"));
+    const snapshot = tracker.todos();
+    tracker.ingest(taskUpdateFrame("task-3", "in_progress"));
+    expect(snapshot[0].status).toBe("pending");
+    expect(tracker.todos()[0].status).toBe("in_progress");
+  });
+
+  it("retains a pending create when its tool_result carries no task.id", () => {
+    const tracker = new PlanTracker();
+    tracker.ingest(taskCreateFrame("tu-4", "Ship the fix"));
+    expect(tracker.ingest(toolResultFrame("tu-4", ""))).toBe(false);
+    expect(tracker.todos()).toEqual([]);
+    expect(tracker.ingest(toolResultFrame("tu-4", "task-4"))).toBe(true);
+    expect(tracker.todos()).toEqual([{ content: "Ship the fix", activeForm: "Ship the fix", status: "pending" }]);
+  });
 });

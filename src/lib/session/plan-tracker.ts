@@ -51,10 +51,10 @@ export class PlanTracker {
         if (result.type !== "tool_result" || !result.tool_use_id) continue;
         const pending = this.pendingCreates.get(result.tool_use_id);
         if (!pending) continue;
-        this.pendingCreates.delete(result.tool_use_id);
         const output = message.tool_use_result as { task?: { id?: string } } | undefined;
         const id = output?.task?.id;
         if (!id) continue;
+        this.pendingCreates.delete(result.tool_use_id);
         this.items.set(id, { content: pending.subject, activeForm: pending.subject, status: "pending" });
         changed = true;
       }
@@ -64,6 +64,6 @@ export class PlanTracker {
   }
 
   todos(): TodoItem[] {
-    return [...this.items.values()];
+    return [...this.items.values()].map((t) => ({ ...t }));
   }
 }

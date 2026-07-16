@@ -2,6 +2,7 @@ import { commitAll, hasCommitsSinceBase, removeWorktree } from "@/lib/git/worktr
 import { readForgeConfig, readTicket, setTicketStatus } from "@/lib/forge/store";
 import { getProjectDir } from "@/lib/project";
 import { findLatestRunForTicket } from "@/lib/run/manager";
+import { appendAuditEvent } from "@/lib/audit";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -49,5 +50,13 @@ export async function POST(
   }
 
   await setTicketStatus(projectDir, id, "rejected");
+  await appendAuditEvent(projectDir, {
+    user: ticket.createdBy,
+    ticketId: ticket.id,
+    kind: "run-rejected",
+    runId: handle?.run.id ?? "",
+    note: "",
+    detail: "run rejected",
+  });
   return Response.json({ ok: true });
 }

@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createTicket, initForge } from "@/lib/forge/store";
 import { resetRunRegistry, startSimulatedRun } from "@/lib/run/manager";
+import type { RunHandle } from "@/lib/run/manager";
+import { UserMessageChannel } from "@/lib/session/channel";
+import { readAuditEvents } from "@/lib/audit";
 import { makeScratchDir } from "@/test/helpers";
 import { POST } from "./route";
 
@@ -31,5 +34,33 @@ describe("POST /api/runs/[runId]/steer", () => {
     resetRunRegistry();
     const res = await POST(jsonRequest({ message: "  " }), { params: Promise.resolve({ runId: "run-nope" }) });
     expect(res.status).toBe(400);
+  });
+
+  it("pushes onto the run's control channel and appends a run-steered audit event", async () => {
+    resetRunRegistry();
+    const { dir, cleanup } = await makeScratchDir();
+    vi.stubEnv("FORGE_PROJECT_DIR", dir);
+    await initForge(dir);
+    const ticket = await createTicket(dir, { type: "generic", title: "t", inputs: { prompt: "t" }, jiraRef: null, source: "manual" }, "Dev <d@e.com>");
+    const handle: RunHandle = startSimulatedRun(dir, ticket, { delayMs: 20 });
+    handle.control = { channel: new UserMessageChannel(), resolvePermission: () => {}, abortController: new AbortController() };
+
+    const res = await POST(jsonRequest({ message: "keep going" }), { params: Promise.resolve({ runId: handle.run.id }) });
+    expect(res.status).toBe(200);
+
+    const yyyymm = new Date().toISOString().slice(0, 7);
+    const events = await readAuditEvents(dir, yyyymm);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "run-steered",
+      runId: handle.run.id,
+      message: "keep going",
+      user: ticket.createdBy,
+      ticketId: ticket.id,
+    });
+
+    vi.unstubAllEnvs();
+    await handle.done;
+    await cleanup();
   });
 });

@@ -5,6 +5,7 @@ import type { ForgeConfig, RunEvent, Ticket } from "@/lib/forge/types";
 import { DEFAULT_FORGE_CONFIG } from "@/lib/forge/store";
 import { makeScratchDir } from "@/test/helpers";
 import { readLastRunState } from "./persist";
+import { readAuditEvents } from "@/lib/audit";
 import {
   findLatestRunForTicket,
   getRun,
@@ -312,6 +313,117 @@ describe("startAgentRun channel lifecycle (mocked SDK, no real API calls)", () =
       expect(ticketAfter?.branchName).toBe("forge/mock-branch");
     },
     3000,
+  );
+
+  it(
+    "appends a run-started audit event once the worktree is created",
+    async () => {
+      const config: ForgeConfig = DEFAULT_FORGE_CONFIG;
+      const handle = startAgentRun(dir, ticket, config);
+
+      await handle.done;
+
+      const yyyymm = new Date().toISOString().slice(0, 7);
+      const events = await readAuditEvents(dir, yyyymm);
+      const runStarted = events.filter((event) => event.kind === "run-started");
+      expect(runStarted).toHaveLength(1);
+      expect(runStarted[0]).toMatchObject({ kind: "run-started", runId: handle.run.id, user: ticket.createdBy, ticketId: ticket.id });
+    },
+    3000,
+  );
+
+  it(
+    "emits a phase-change to executing before the gates-running phase-change",
+    async () => {
+      const config: ForgeConfig = DEFAULT_FORGE_CONFIG;
+      const handle = startAgentRun(dir, ticket, config);
+
+      await handle.done;
+
+      const phaseChanges = handle.events.filter(
+        (event): event is Extract<RunEvent, { kind: "phase-change" }> => event.kind === "phase-change",
+      );
+      const executingIndex = phaseChanges.findIndex((event) => event.to === "executing");
+      const gatesRunningIndex = phaseChanges.findIndex((event) => event.to === "gates-running");
+      expect(executingIndex).toBeGreaterThanOrEqual(0);
+      expect(gatesRunningIndex).toBeGreaterThan(executingIndex);
+    },
+    3000,
+  );
+});
+
+describe("startAgentRun interrupt handling (mocked SDK, no real API calls)", () => {
+  let dir: string;
+  let cleanup: () => Promise<void>;
+  let ticket: Ticket;
+
+  beforeEach(async () => {
+    resetRunRegistry();
+    ({ dir, cleanup } = await makeScratchDir());
+    await initForge(dir);
+    ticket = await createTicket(
+      dir,
+      { type: "generic", title: "Interrupt check", inputs: { prompt: "Interrupt check" }, jiraRef: null, source: "manual" },
+      DEV,
+    );
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await cleanup();
+  });
+
+  it(
+    "records an aborted run as interrupted, not failed, and emits no error event",
+    async () => {
+      async function* neverEndingStream(params: { options: { abortController: AbortController } }): AsyncGenerator<unknown> {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sess-abort",
+          uuid: "ua1",
+          cwd: "/tmp/mock-worktree",
+          tools: [],
+          model: "claude",
+          mcp_servers: [],
+          permissionMode: "default",
+          slash_commands: [],
+          skills: [],
+          output_style: "",
+          plugins: [],
+          apiKeySource: "user",
+          claude_code_version: "1.0.0",
+        };
+        // Wait until the test aborts the controller, then throw - matching
+        // how a real streaming session's iterator rejects when its
+        // AbortSignal fires mid-turn - instead of ever yielding a result frame.
+        await new Promise<void>((resolve) => {
+          params.options.abortController.signal.addEventListener("abort", () => resolve());
+        });
+        throw new Error("The user aborted a request.");
+      }
+
+      setNextStream(neverEndingStream as never);
+      const config: ForgeConfig = DEFAULT_FORGE_CONFIG;
+      const handle = startAgentRun(dir, ticket, config);
+
+      await vi.waitFor(
+        () => {
+          expect(handle.run.worktreePath).not.toBeNull();
+        },
+        { timeout: 2000, interval: 5 },
+      );
+
+      handle.control?.abortController.abort();
+
+      await handle.done;
+
+      expect(handle.run.state).toBe("interrupted");
+      const terminal = handle.events.at(-1);
+      expect(terminal).toMatchObject({ kind: "phase-change", to: "interrupted" });
+      expect(handle.events.some((event) => event.kind === "error")).toBe(false);
+    },
+    5000,
   );
 });
 

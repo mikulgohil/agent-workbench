@@ -211,6 +211,13 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
         branch,
         iteration: record.run.iteration,
       });
+      await appendAuditEvent(projectDir, {
+        user: ticket.createdBy,
+        ticketId: ticket.id,
+        kind: "run-started",
+        runId,
+        detail: "run started",
+      });
 
       void startInstall(worktreePath, config.packageManager).then((result) => {
         bashGate.markReady();
@@ -308,6 +315,8 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
         },
       });
 
+      applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "executing" });
+
       for await (const message of run) {
         for (const event of mapSdkMessages(message, nextSeq)) {
           applyEvent(record, event);
@@ -372,9 +381,14 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
       });
       await setTicketStatus(projectDir, ticket.id, "review", { branchName: branch });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      applyEvent(record, { kind: "error", seq: nextSeq(), at: nowIso(), message, recoverable: false });
-      applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "failed" });
+      const aborted = abortController.signal.aborted;
+      if (aborted) {
+        applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "interrupted" });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        applyEvent(record, { kind: "error", seq: nextSeq(), at: nowIso(), message, recoverable: false });
+        applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "failed" });
+      }
       record.run = { ...record.run, endedAt: nowIso() };
       await appendRunState(projectDir, ticket.id, runId, {
         state: record.run.state,

@@ -2,6 +2,7 @@ import { commitAll, removeWorktree } from "@/lib/git/worktree";
 import { readTicket, setTicketStatus } from "@/lib/forge/store";
 import { getProjectDir } from "@/lib/project";
 import { findLatestRunForTicket } from "@/lib/run/manager";
+import { appendAuditEvent } from "@/lib/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -37,5 +38,13 @@ export async function POST(
   }
 
   await setTicketStatus(projectDir, id, "done");
+  await appendAuditEvent(projectDir, {
+    user: ticket.createdBy,
+    ticketId: ticket.id,
+    kind: "run-approved",
+    runId: handle?.run.id ?? "",
+    note: "",
+    detail: "run approved",
+  });
   return Response.json({ ok: true });
 }
