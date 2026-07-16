@@ -8,6 +8,7 @@ import { DEFAULT_FORGE_CONFIG } from "@/lib/forge/store";
 import { makeScratchDir } from "@/test/helpers";
 import { readLastRunState } from "./persist";
 import { readAuditEvents } from "@/lib/audit";
+import { runGate } from "@/lib/gates";
 import {
   findLatestRunForTicket,
   getRun,
@@ -147,6 +148,17 @@ const { setNextStream, defaultQueryImpl } = vi.hoisted(() => {
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: (params: unknown) => defaultQueryImpl(params as Parameters<typeof defaultQueryImpl>[0]),
+}));
+
+vi.mock("@/lib/gates", () => ({
+  runGate: vi.fn().mockResolvedValue({
+    name: "typecheck",
+    basis: "command",
+    status: "passed",
+    score: 100,
+    explanation: "typecheck exited 0",
+    durationMs: 5,
+  }),
 }));
 
 describe("run manager", () => {
@@ -582,4 +594,126 @@ describe("startAgentRun permission-request/decision emission (mocked SDK, no rea
     },
     3000,
   );
+});
+
+const PASSED_GATE = { name: "typecheck", basis: "command", status: "passed", score: 100, explanation: "ok", durationMs: 5 } as const;
+const FAILED_GATE = { name: "typecheck", basis: "command", status: "failed", score: 0, explanation: "TS2322: type error", durationMs: 5 } as const;
+
+describe("startAgentRun gate-feedback loop (mocked SDK + mocked gates, no real API calls)", () => {
+  let dir: string;
+  let cleanup: () => Promise<void>;
+  let ticket: Ticket;
+
+  beforeEach(async () => {
+    resetRunRegistry();
+    ({ dir, cleanup } = await makeScratchDir());
+    await initForge(dir);
+    const base = await createTicket(
+      dir,
+      { type: "generic", title: "Gate loop", inputs: { prompt: "Gate loop" }, jiraRef: null, source: "manual" },
+      DEV,
+    );
+    // startAgentRun receives the ticket object directly; give it one gate so
+    // the loop has something to fail/pass on (createTicket defaults gates to []).
+    ticket = { ...base, gates: ["typecheck"] };
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await cleanup();
+  });
+
+  it("runs iteration 1 automatically and completes when the fix passes", async () => {
+    vi.mocked(runGate).mockResolvedValueOnce(FAILED_GATE).mockResolvedValue(PASSED_GATE);
+    const handle = startAgentRun(dir, ticket, DEFAULT_FORGE_CONFIG);
+    await handle.done;
+
+    expect(handle.run.iteration).toBe(1);
+    expect(handle.run.state).toBe("completed");
+    const phases = handle.events.filter((e): e is Extract<RunEvent, { kind: "phase-change" }> => e.kind === "phase-change");
+    // gates-running -> executing (fix), then executing -> gates-running.
+    expect(phases.some((p) => p.from === "gates-running" && p.to === "executing")).toBe(true);
+    expect(handle.events.some((e) => e.kind === "gate-retry-projection")).toBe(false);
+  });
+
+  it("pauses at awaiting-iteration-approval before iteration 2 and resumes on continue", async () => {
+    vi.mocked(runGate).mockResolvedValueOnce(FAILED_GATE).mockResolvedValueOnce(FAILED_GATE).mockResolvedValue(PASSED_GATE);
+    const handle = startAgentRun(dir, ticket, DEFAULT_FORGE_CONFIG);
+
+    await vi.waitFor(() => {
+      expect(handle.view.state).toBe("awaiting-iteration-approval");
+    }, { timeout: 3000, interval: 5 });
+
+    const projection = handle.events.find((e): e is Extract<RunEvent, { kind: "gate-retry-projection" }> => e.kind === "gate-retry-projection");
+    expect(projection?.iteration).toBe(2);
+    // two sealed sessions so far (initial + iteration 1), 0.01 each in the
+    // default fake stream, total 0.02, / (iteration(=1) + 1) = 0.01.
+    expect(projection?.projectedCostUsd).toBeCloseTo(0.01, 10);
+    // enabled in Task 9
+    // expect(handle.view.pendingIteration).toEqual({ iteration: 2, projectedCostUsd: projection?.projectedCostUsd });
+
+    handle.control?.resolveIteration("continue");
+    await handle.done;
+
+    expect(handle.run.iteration).toBe(2);
+    expect(handle.run.state).toBe("completed");
+    // enabled in Task 9
+    // expect(handle.view.pendingIteration).toBeNull();
+  });
+
+  it("exits to completed on stop, leaving the failing gates shown", async () => {
+    vi.mocked(runGate).mockResolvedValueOnce(FAILED_GATE).mockResolvedValue(FAILED_GATE);
+    const handle = startAgentRun(dir, ticket, DEFAULT_FORGE_CONFIG);
+
+    await vi.waitFor(() => {
+      expect(handle.view.state).toBe("awaiting-iteration-approval");
+    }, { timeout: 3000, interval: 5 });
+
+    handle.control?.resolveIteration("stop");
+    await handle.done;
+
+    expect(handle.run.iteration).toBe(1); // never advanced to iteration 2
+    expect(handle.run.state).toBe("completed");
+    expect(handle.view.gates.some((g) => g.status === "failed")).toBe(true);
+  });
+
+  it("caps at iteration 3 when gates keep failing after the checkpoint", async () => {
+    vi.mocked(runGate).mockResolvedValue(FAILED_GATE); // always fails
+    const handle = startAgentRun(dir, ticket, DEFAULT_FORGE_CONFIG);
+
+    await vi.waitFor(() => {
+      expect(handle.view.state).toBe("awaiting-iteration-approval");
+    }, { timeout: 3000, interval: 5 });
+
+    handle.control?.resolveIteration("continue"); // iteration 2, then iteration 3 auto
+    await handle.done;
+
+    expect(handle.run.iteration).toBe(3);
+    expect(handle.run.state).toBe("completed");
+    const projections = handle.events.filter((e) => e.kind === "gate-retry-projection");
+    expect(projections).toHaveLength(1); // only the before-iteration-2 checkpoint
+  });
+
+  it("accumulates cost across the initial session and fix sessions", async () => {
+    vi.mocked(runGate).mockResolvedValueOnce(FAILED_GATE).mockResolvedValue(PASSED_GATE);
+    const handle = startAgentRun(dir, ticket, DEFAULT_FORGE_CONFIG);
+    await handle.done;
+    // initial + iteration-1 sessions, 0.01 each in the default fake stream.
+    expect(handle.view.cost.costUsd).toBeCloseTo(0.02, 10);
+  });
+
+  it("treats an abort during the checkpoint wait as an interrupt", async () => {
+    vi.mocked(runGate).mockResolvedValueOnce(FAILED_GATE).mockResolvedValue(FAILED_GATE);
+    const handle = startAgentRun(dir, ticket, DEFAULT_FORGE_CONFIG);
+
+    await vi.waitFor(() => {
+      expect(handle.view.state).toBe("awaiting-iteration-approval");
+    }, { timeout: 3000, interval: 5 });
+
+    handle.control?.abortController.abort();
+    await handle.done;
+
+    expect(handle.run.state).toBe("interrupted");
+    expect(handle.events.some((e) => e.kind === "error")).toBe(false);
+  });
 });

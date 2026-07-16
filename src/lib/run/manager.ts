@@ -42,6 +42,8 @@ export interface RunHandle {
     channel: UserMessageChannel;
     resolvePermission: (requestId: string, decision: "allow" | "always" | "deny") => void;
     abortController: AbortController;
+    /** Resolves the before-iteration-2 gate-feedback cost checkpoint. */
+    resolveIteration: (decision: "continue" | "stop") => void;
   };
 }
 
@@ -168,6 +170,12 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
   const channel = new UserMessageChannel();
   const bashGate = new BashGate();
 
+  let iterationDecider: ((decision: "continue" | "stop") => void) | null = null;
+  const resolveIteration = (decision: "continue" | "stop"): void => {
+    iterationDecider?.(decision);
+    iterationDecider = null;
+  };
+
   const record: RunRecord = {
     run: {
       id: runId,
@@ -184,7 +192,7 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
     view: initialRunView(runId),
     listeners: new Set(),
     done: Promise.resolve(),
-    control: { channel, resolvePermission: broker.resolve, abortController },
+    control: { channel, resolvePermission: broker.resolve, abortController, resolveIteration },
   };
   registry().set(runId, record);
 
@@ -371,6 +379,22 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
         return gates;
       };
 
+      const buildGateFeedback = (failed: Gate[]): string => {
+        const header = "Some quality gates failed. Please fix them, then stop.";
+        const sections = failed.map((gate) => `\n\n## ${gate.name}\n${gate.explanation}`).join("");
+        return `${header}${sections}`;
+      };
+
+      const waitForIterationDecision = (): Promise<"continue" | "stop"> =>
+        new Promise<"continue" | "stop">((resolve, reject) => {
+          iterationDecider = resolve;
+          if (abortController.signal.aborted) {
+            reject(new Error("aborted"));
+            return;
+          }
+          abortController.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+
       const run = query({ prompt: channel, options: buildQueryOptions(null) });
 
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "executing" });
@@ -388,7 +412,66 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
       });
       lastGates = await runGatesOnce(worktreePath);
 
-      applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: "gates-running", to: "completed" });
+      // Gate-feedback loop (docs/blueprint/06-execution-model.md). Iteration
+      // 0 was the initial gate run above. Up to 3 fix cycles: iteration 1 is
+      // automatic; before iteration 2 ONLY we show the projected retry cost
+      // and wait for a continue/stop decision; iteration 3 (if reached) runs
+      // automatically. The cap is 3.
+      while (lastGates.some((gate) => gate.status === "failed") && record.run.iteration < 3) {
+        const nextIteration = record.run.iteration + 1;
+
+        if (nextIteration === 2) {
+          // Before-iteration-2 human cost checkpoint. Projected cost is the
+          // observed cost so far averaged across the sessions run so far
+          // (initial + iteration 1 = record.run.iteration + 1 = 2).
+          const projectedCostUsd = costTracker.total().costUsd / (record.run.iteration + 1);
+          applyEvent(record, { kind: "gate-retry-projection", seq: nextSeq(), at: nowIso(), iteration: nextIteration, projectedCostUsd });
+          applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "awaiting-iteration-approval" });
+          const decision = await waitForIterationDecision();
+          if (decision === "stop") break;
+        }
+
+        // Enter the fix cycle: resume the agent session with gate feedback.
+        applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "executing" });
+        record.run = { ...record.run, iteration: nextIteration };
+        await appendRunState(projectDir, ticket.id, runId, {
+          state: record.run.state,
+          sessionId: record.run.sessionId,
+          worktreePath: record.run.worktreePath,
+          branch,
+          iteration: record.run.iteration,
+        });
+
+        const failedGates = lastGates.filter((gate) => gate.status === "failed");
+        // A resumed session needs a NEW channel (the initial one is closed
+        // after its result frame and cannot reopen). Swap it onto control so
+        // steer keeps targeting the live session (guide 4.2: re-pass options).
+        const fixChannel = new UserMessageChannel();
+        record.control!.channel = fixChannel;
+        fixChannel.push(buildGateFeedback(failedGates));
+        const fixRun = query({ prompt: fixChannel, options: buildQueryOptions(record.run.sessionId) });
+        await consumeSession(fixRun, fixChannel);
+        costTracker.sealSession();
+
+        applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "gates-running" });
+        await appendRunState(projectDir, ticket.id, runId, {
+          state: record.run.state,
+          sessionId: record.run.sessionId,
+          worktreePath: record.run.worktreePath,
+          branch,
+          iteration: record.run.iteration,
+        });
+        lastGates = await runGatesOnce(worktreePath);
+      }
+
+      // LOCKED DEVIATION (Phase 2 addendum): the blueprint routes the gate
+      // loop's exit through a run-pausing `awaiting-approval` terminal. That
+      // approval-lifecycle restructure is deferred to Phase 3; here every
+      // loop exit (fix passed, developer stopped, or cap reached) falls
+      // through to the existing Phase 2 completed/commit/review tail, with
+      // any still-failing gates shown as-is. `from` is record.view.state so
+      // a stop-at-checkpoint exit reports the accurate prior state.
+      applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: record.view.state, to: "completed" });
       await commitAll(worktreePath, `${ticket.type}: ${ticket.title}\n\nTicket: ${ticket.id}`);
       record.run = { ...record.run, endedAt: nowIso() };
       await appendRunState(projectDir, ticket.id, runId, {

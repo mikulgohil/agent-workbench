@@ -43,7 +43,7 @@ describe("POST /api/runs/[runId]/steer", () => {
     await initForge(dir);
     const ticket = await createTicket(dir, { type: "generic", title: "t", inputs: { prompt: "t" }, jiraRef: null, source: "manual" }, "Dev <d@e.com>");
     const handle: RunHandle = startSimulatedRun(dir, ticket, { delayMs: 20 });
-    handle.control = { channel: new UserMessageChannel(), resolvePermission: () => {}, abortController: new AbortController() };
+    handle.control = { channel: new UserMessageChannel(), resolvePermission: () => {}, abortController: new AbortController(), resolveIteration: () => {} };
 
     const res = await POST(jsonRequest({ message: "keep going" }), { params: Promise.resolve({ runId: handle.run.id }) });
     expect(res.status).toBe(200);
