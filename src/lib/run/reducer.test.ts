@@ -52,4 +52,27 @@ describe("reduceRun", () => {
     reduceRun(start, { kind: "message", seq: 1, at: "2026-01-01T00:00:01.000Z", text: "hello" });
     expect(JSON.stringify(start)).toBe(frozen);
   });
+
+  it("sets pendingPermission on a permission-request and clears it on the matching decision", () => {
+    const start = initialRunView("run-x");
+    expect(start.pendingPermission).toBeNull();
+
+    const requested = reduceRun(start, {
+      kind: "permission-request",
+      seq: 1,
+      at: "2026-01-01T00:00:01.000Z",
+      requestId: "req-1",
+      command: "rm -rf dist",
+    });
+    expect(requested.pendingPermission).toEqual({ requestId: "req-1", command: "rm -rf dist" });
+
+    const decided = reduceRun(requested, {
+      kind: "permission-decision",
+      seq: 2,
+      at: "2026-01-01T00:00:02.000Z",
+      requestId: "req-1",
+      decision: "approved",
+    });
+    expect(decided.pendingPermission).toBeNull();
+  });
 });

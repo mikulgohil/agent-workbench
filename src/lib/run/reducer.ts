@@ -15,6 +15,14 @@ export interface RunView {
   gates: Gate[];
   cost: CostRecord;
   lastMessage: string;
+  /**
+   * The paused Bash permission prompt the UI should show approve/allowlist/
+   * deny buttons for, or null when nothing is pending. Shaped after the
+   * canonical `permission-request` RunEvent (requestId + command), not the
+   * permission broker's generic PendingApproval (toolName + input) - the
+   * canonical event only carries a Bash command string.
+   */
+  pendingPermission: { requestId: string; command: string } | null;
 }
 
 export const ZERO_COST: CostRecord = {
@@ -26,7 +34,15 @@ export const ZERO_COST: CostRecord = {
 };
 
 export function initialRunView(runId: string): RunView {
-  return { runId, state: "preparing", todos: [], gates: [], cost: ZERO_COST, lastMessage: "" };
+  return {
+    runId,
+    state: "preparing",
+    todos: [],
+    gates: [],
+    cost: ZERO_COST,
+    lastMessage: "",
+    pendingPermission: null,
+  };
 }
 
 export function reduceRun(view: RunView, event: RunEvent): RunView {
@@ -43,14 +59,16 @@ export function reduceRun(view: RunView, event: RunEvent): RunView {
       return { ...view, cost: event.cumulative };
     case "error":
       return { ...view, lastMessage: event.message };
+    case "permission-request":
+      return { ...view, pendingPermission: { requestId: event.requestId, command: event.command } };
+    case "permission-decision":
+      return { ...view, pendingPermission: null };
     case "run-started":
     case "plan-proposed":
     case "plan-decision":
     case "steer-message":
     case "tool-use":
     case "tool-result":
-    case "permission-request":
-    case "permission-decision":
     case "bash-command":
     case "gate-retry-projection":
       // These variants either belong to later phases or do not change the

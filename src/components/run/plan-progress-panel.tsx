@@ -1,7 +1,19 @@
+"use client";
+
 import type { ReactElement } from "react";
+import { useState } from "react";
 import type { RunState, TodoStatus } from "@/lib/forge/types";
 import type { RunView } from "@/lib/run/reducer";
 import { formatCost, summarizeProgress } from "@/lib/ui/format";
+
+const DECISIONS = ["allow", "always", "deny"] as const;
+type Decision = (typeof DECISIONS)[number];
+
+const DECISION_LABEL: Record<Decision, string> = {
+  allow: "Approve",
+  always: "Always allow",
+  deny: "Deny",
+};
 
 const TODO_ICONS: Record<TodoStatus, string> = {
   pending: "○",
@@ -41,6 +53,28 @@ function headline(state: RunState): string {
 }
 
 export function PlanProgressPanel({ view }: { view: RunView }): ReactElement {
+  const { pendingPermission } = view;
+  const [sendingDecision, setSendingDecision] = useState<Decision | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function decide(requestId: string, decision: Decision): Promise<void> {
+    if (sendingDecision) return;
+    setSendingDecision(decision);
+    setError(null);
+    const res = await fetch(`/api/runs/${view.runId}/approvals/${requestId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      setError(body.error ?? `request failed (${res.status})`);
+    }
+    // No manual refresh needed: the SSE stream emits the run's next event
+    // once the broker resolves, which folds pendingPermission back to null.
+    setSendingDecision(null);
+  }
+
   return (
     <section
       aria-label="Plan and progress"
@@ -85,6 +119,31 @@ export function PlanProgressPanel({ view }: { view: RunView }): ReactElement {
             );
           })}
         </ul>
+      ) : null}
+      {pendingPermission ? (
+        <div className="mt-3 rounded-lg border border-amber-900 bg-amber-950/40 p-3 text-sm">
+          <p className="text-amber-200">
+            Permission requested to run: <code className="text-amber-100">{pendingPermission.command}</code>
+          </p>
+          {error ? (
+            <p role="alert" className="mt-1 text-sm text-red-400">
+              {error}
+            </p>
+          ) : null}
+          <div className="mt-2 flex gap-2">
+            {DECISIONS.map((decision) => (
+              <button
+                key={decision}
+                type="button"
+                disabled={sendingDecision !== null}
+                onClick={() => void decide(pendingPermission.requestId, decision)}
+                className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-900 disabled:opacity-50"
+              >
+                {sendingDecision === decision ? "Sending..." : DECISION_LABEL[decision]}
+              </button>
+            ))}
+          </div>
+        </div>
       ) : null}
     </section>
   );
