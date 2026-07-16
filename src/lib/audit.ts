@@ -1,16 +1,11 @@
 import { join } from "node:path";
+import type { AuditEvent } from "@/lib/forge/types";
 import { appendJsonl, readJsonl } from "@/lib/forge/jsonl";
 import { forgeDir } from "@/lib/forge/store";
 import { APP_VERSION } from "@/lib/version";
 
-export interface AuditEvent {
-  at: string;
-  user: string;
-  ticketId: string | null;
-  event: string;
-  detail: Record<string, unknown>;
-  appVersion: string;
-}
+/** Distributive Omit for discriminated unions: ensures Omit distributes over union members. */
+type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
 function auditFilePath(projectDir: string, yyyymm: string): string {
   return join(forgeDir(projectDir), "audit", `${yyyymm}.jsonl`);
@@ -23,7 +18,7 @@ function currentYyyyMm(): string {
 /** Append-only, one file per calendar month (spec: .forge/audit/<YYYY-MM>.jsonl). */
 export async function appendAuditEvent(
   projectDir: string,
-  event: Omit<AuditEvent, "at" | "appVersion">,
+  event: DistributiveOmit<AuditEvent, "at" | "appVersion">,
 ): Promise<void> {
   const full: AuditEvent = { ...event, at: new Date().toISOString(), appVersion: APP_VERSION };
   await appendJsonl(auditFilePath(projectDir, currentYyyyMm()), full);

@@ -307,3 +307,46 @@ export type RunEvent = RunEventBase &
 export function isTerminalEvent(event: RunEvent): boolean {
   return event.kind === "phase-change" && isTerminalState(event.to);
 }
+
+/* ------------------------------------------------------------------ */
+/* Audit log                                                           */
+/* ------------------------------------------------------------------ */
+
+export interface AuditEventBase {
+  /** Git identity of the developer who took the action. */
+  user: string;
+  at: string;
+  /** Null only for ticket-independent events like `knowledge-consolidated`. */
+  ticketId: string | null;
+  /** Short human-readable summary line, shown directly in the Audit page. */
+  detail: string;
+  appVersion: string;
+}
+
+/**
+ * Discriminated union of every audited action, per the spec's Audit log
+ * section. Note: the `"run-started"` kind here and the `"run-started"`
+ * kind on `RunEvent` are independent event systems (committed audit
+ * trail vs. local full transcript) that happen to share a name.
+ */
+export type AuditEvent = AuditEventBase &
+  (
+    | { kind: "ticket-created"; ticketType: TicketType; title: string }
+    | { kind: "run-started"; runId: string }
+    | { kind: "run-interrupted"; runId: string }
+    | { kind: "run-steered"; runId: string; message: string }
+    | { kind: "run-approved"; runId: string; note: string }
+    | { kind: "run-rejected"; runId: string; note: string }
+    | { kind: "chat-auto-ticket-created"; runId: string }
+    | { kind: "bash-command-approved"; runId: string; command: string }
+    | { kind: "bash-command-allowlisted"; runId: string; command: string }
+    | { kind: "bash-command-denied"; runId: string; command: string }
+    | { kind: "lesson-added"; lessonId: string }
+    | { kind: "lesson-reverted"; lessonId: string }
+    | {
+        kind: "knowledge-consolidated";
+        lessonsMerged: number;
+        lessonsPruned: number;
+      }
+    | { kind: "handover-generated"; runId: string }
+  );

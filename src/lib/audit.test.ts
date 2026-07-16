@@ -7,10 +7,22 @@ describe("audit log", () => {
     const { dir, cleanup } = await makeScratchDir();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
-    await appendAuditEvent(dir, { user: "Dev <dev@example.com>", ticketId: "tkt-1", event: "bash_approved", detail: { command: "pnpm test" } });
+    await appendAuditEvent(dir, {
+      user: "Dev <dev@example.com>",
+      ticketId: "tkt-1",
+      kind: "bash-command-approved",
+      runId: "run-1",
+      command: "pnpm test",
+      detail: "Approved: pnpm test",
+    });
     const events = await readAuditEvents(dir, "2026-07");
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ user: "Dev <dev@example.com>", ticketId: "tkt-1", event: "bash_approved" });
+    expect(events[0]).toMatchObject({
+      user: "Dev <dev@example.com>",
+      ticketId: "tkt-1",
+      kind: "bash-command-approved",
+      command: "pnpm test",
+    });
     expect(events[0].at).toBe("2026-07-16T12:00:00.000Z");
     expect(typeof events[0].appVersion).toBe("string");
     vi.useRealTimers();
