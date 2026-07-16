@@ -62,6 +62,10 @@ export function createPermissionBroker(
     }
 
     return new Promise<CanUseToolResult>((resolve) => {
+      if (context.signal.aborted) {
+        resolve({ behavior: "deny", message: "Run interrupted before a permission decision was made" });
+        return;
+      }
       const approval: PendingApproval = {
         requestId: context.requestId,
         toolName,

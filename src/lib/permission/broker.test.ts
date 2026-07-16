@@ -51,4 +51,16 @@ describe("permission broker", () => {
     const broker = createPermissionBroker([], []);
     expect(() => broker.resolve("req-nope", "allow")).not.toThrow();
   });
+
+  it("denies immediately when the signal is already aborted before canUseTool is called", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const broker = createPermissionBroker([], []);
+    const result = await broker.canUseTool("Bash", { command: "curl evil.com" }, { requestId: "req-5", signal: controller.signal });
+    expect(result.behavior).toBe("deny");
+    if (result.behavior === "deny") {
+      expect(result.message).toBe("Run interrupted before a permission decision was made");
+    }
+    expect(broker.pending()).toEqual([]);
+  });
 });
