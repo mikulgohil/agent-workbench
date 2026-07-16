@@ -1,12 +1,12 @@
 import { newId, nowIso } from "@/lib/forge/ids";
 import { setTicketStatus } from "@/lib/forge/store";
 import { isTerminalState } from "@/lib/forge/types";
-import type { ForgeConfig, Run, RunEvent, Ticket } from "@/lib/forge/types";
+import type { ForgeConfig, FileTouch, Gate, Run, RunEvent, Ticket } from "@/lib/forge/types";
 import { simulateRun } from "@/lib/sim/simulator";
 import { initialRunView, reduceRun } from "./reducer";
 import type { RunView } from "./reducer";
 import { isRealEngineAvailable } from "@/lib/engine";
-import { createWorktree, removeWorktree, commitAll } from "@/lib/git/worktree";
+import { createWorktree, removeWorktree, commitAll, changedFiles } from "@/lib/git/worktree";
 import { startInstall, BashGate } from "@/lib/prepare";
 import { createPermissionBroker } from "@/lib/permission/broker";
 import { resolveBashCommand } from "@/lib/permission/allowlist";
@@ -17,6 +17,7 @@ import { CostTracker } from "@/lib/session/cost-tracker";
 import { appendAuditEvent } from "@/lib/audit";
 import { runGate } from "@/lib/gates";
 import { appendRunState } from "./persist";
+import { buildRunSummary, writeRunSummary } from "./summary";
 
 /**
  * In-memory registry of runs for the current app process.
@@ -194,6 +195,7 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
 
   record.done = (async (): Promise<void> => {
     let branch: string | null = null;
+    const lastGates: Gate[] = [];
     try {
       await setTicketStatus(projectDir, ticket.id, "running");
       const { path: worktreePath, branch: createdBranch } = await createWorktree(
@@ -367,6 +369,7 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
         const scriptName = config.scripts[gateName as keyof typeof config.scripts] ?? gateName;
         const gate = await runGate(worktreePath, gateName, scriptName, config.packageManager);
         applyEvent(record, { kind: "gate-result", seq: nextSeq(), at: nowIso(), gate });
+        lastGates.push(gate);
       }
 
       applyEvent(record, { kind: "phase-change", seq: nextSeq(), at: nowIso(), from: "gates-running", to: "completed" });
@@ -379,6 +382,29 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
         branch,
         iteration: record.run.iteration,
       });
+
+      // Write the sanitized, committed run summary exactly once, while the
+      // worktree still exists (changedFiles diffs it against the base
+      // branch). commandsRun is [] for now (see summary.ts KNOWN GAP).
+      const filesTouched = await changedFiles(worktreePath, config.baseBranch).catch((): FileTouch[] => []);
+      await writeRunSummary(
+        projectDir,
+        ticket.id,
+        buildRunSummary({
+          id: record.run.id,
+          ticketId: record.run.ticketId,
+          state: record.run.state,
+          filesTouched,
+          commandsRun: [],
+          gates: lastGates,
+          iteration: record.run.iteration,
+          cost: record.view.cost,
+          approval: record.run.approval,
+          startedAt: record.run.startedAt,
+          endedAt: record.run.endedAt ?? nowIso(),
+        }),
+      );
+
       await setTicketStatus(projectDir, ticket.id, "review", { branchName: branch });
     } catch (error) {
       const aborted = abortController.signal.aborted;
@@ -400,6 +426,38 @@ export function startAgentRun(projectDir: string, ticket: Ticket, config: ForgeC
         // Best-effort: a persistence failure here must not block the
         // already-in-progress failure handling below.
       });
+
+      // Best-effort terminal summary for failed/interrupted runs. Wrapped
+      // so a write failure here never masks the original error. Note:
+      // `rejected` is never produced by this writer - rejection is a
+      // post-run ticket op handled outside startAgentRun.
+      if (record.run.worktreePath) {
+        try {
+          const wt = record.run.worktreePath;
+          const filesTouched = await changedFiles(wt, config.baseBranch).catch((): FileTouch[] => []);
+          await writeRunSummary(
+            projectDir,
+            ticket.id,
+            buildRunSummary({
+              id: record.run.id,
+              ticketId: record.run.ticketId,
+              state: record.run.state,
+              filesTouched,
+              commandsRun: [],
+              gates: lastGates,
+              iteration: record.run.iteration,
+              cost: record.view.cost,
+              approval: record.run.approval,
+              startedAt: record.run.startedAt,
+              endedAt: record.run.endedAt ?? nowIso(),
+            }),
+          );
+        } catch {
+          // Best-effort: never let a summary-write failure mask the run's
+          // original failure/interrupt handling below.
+        }
+      }
+
       if (record.run.worktreePath) {
         await removeWorktree(projectDir, record.run.worktreePath).catch(() => {});
       }

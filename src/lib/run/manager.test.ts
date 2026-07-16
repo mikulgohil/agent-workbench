@@ -1,5 +1,7 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createTicket, initForge, readTicket } from "@/lib/forge/store";
+import { createTicket, forgeDir, initForge, readTicket } from "@/lib/forge/store";
 import * as store from "@/lib/forge/store";
 import type { ForgeConfig, RunEvent, Ticket } from "@/lib/forge/types";
 import { DEFAULT_FORGE_CONFIG } from "@/lib/forge/store";
@@ -24,6 +26,7 @@ vi.mock("@/lib/git/worktree", () => ({
   createWorktree: vi.fn().mockResolvedValue({ path: "/tmp/mock-worktree", branch: "forge/mock-branch" }),
   removeWorktree: vi.fn().mockResolvedValue(undefined),
   commitAll: vi.fn().mockResolvedValue(undefined),
+  changedFiles: vi.fn().mockResolvedValue([{ path: "src/x.ts", kind: "modified" }]),
 }));
 
 // Only `startInstall` is stubbed (no real `pnpm install` against a fake
@@ -347,6 +350,27 @@ describe("startAgentRun channel lifecycle (mocked SDK, no real API calls)", () =
       const gatesRunningIndex = phaseChanges.findIndex((event) => event.to === "gates-running");
       expect(executingIndex).toBeGreaterThanOrEqual(0);
       expect(gatesRunningIndex).toBeGreaterThan(executingIndex);
+    },
+    3000,
+  );
+
+  it(
+    "writes a sanitized RunSummary to runs/<id>.summary.json when the run completes",
+    async () => {
+      const config: ForgeConfig = DEFAULT_FORGE_CONFIG;
+      const handle = startAgentRun(dir, ticket, config);
+      await handle.done;
+
+      const path = join(forgeDir(dir), "tickets", ticket.id, "runs", `${handle.run.id}.summary.json`);
+      const raw = await readFile(path, "utf8");
+      const summary = JSON.parse(raw) as import("@/lib/forge/types").RunSummary;
+      expect(summary.id).toBe(handle.run.id);
+      expect(summary.ticketId).toBe(ticket.id);
+      expect(summary.state).toBe("completed");
+      expect(summary.filesTouched).toEqual([{ path: "src/x.ts", kind: "modified" }]);
+      expect(summary.commandsRun).toEqual([]);
+      expect(summary.gates).toEqual([]); // ticket.gates is [] by default in these tests
+      expect(raw).not.toContain("\"diff\"");
     },
     3000,
   );
