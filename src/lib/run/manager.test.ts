@@ -423,7 +423,6 @@ describe("startAgentRun interrupt handling (mocked SDK, no real API calls)", () 
       expect(terminal).toMatchObject({ kind: "phase-change", to: "interrupted" });
       expect(handle.events.some((event) => event.kind === "error")).toBe(false);
     },
-    5000,
   );
 });
 
