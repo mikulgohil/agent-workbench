@@ -68,3 +68,9 @@ export async function commitAll(worktreePath: string, message: string): Promise<
   await execFileAsync("git", ["add", "-A"], { cwd: worktreePath });
   await execFileAsync("git", ["commit", "-q", "-m", message], { cwd: worktreePath });
 }
+
+/** True when the worktree's branch has at least one commit beyond baseBranch (rejection's keep-vs-delete rule). */
+export async function hasCommitsSinceBase(worktreePath: string, baseBranch: string): Promise<boolean> {
+  const { stdout } = await execFileAsync("git", ["log", `${baseBranch}..HEAD`, "--oneline"], { cwd: worktreePath });
+  return stdout.trim().length > 0;
+}

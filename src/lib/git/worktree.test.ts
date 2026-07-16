@@ -9,6 +9,7 @@ import {
   branchName,
   commitAll,
   createWorktree,
+  hasCommitsSinceBase,
   hasDiff,
   projectHash,
   removeWorktree,
@@ -95,5 +96,14 @@ describe("worktree module", () => {
     await commitAll(path, "WIP: should not be created");
     const { stdout } = await execFileAsync("git", ["log", "--oneline"], { cwd: path });
     expect(stdout).not.toContain("should not be created");
+  });
+
+  it("detects whether a worktree branch has commits beyond its base", async () => {
+    const { path } = await createWorktree(dir, "tkt-approve01", "Approve check", "main");
+    createdWorktrees.push(path);
+    expect(await hasCommitsSinceBase(path, "main")).toBe(false);
+    await writeFile(join(path, "README.md"), "hello\nedited\n", "utf8");
+    await commitAll(path, "real work");
+    expect(await hasCommitsSinceBase(path, "main")).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import type { ReactElement } from "react";
+import { ApprovalActions } from "@/components/run/approval-actions";
 import { TaskRunView } from "@/components/run/task-run-view";
 import { readTicket } from "@/lib/forge/store";
 import { getProjectDir } from "@/lib/project";
@@ -28,6 +29,7 @@ export default async function TaskPage({
       ) : (
         <p className="text-sm text-zinc-500">No run recorded for this task yet.</p>
       )}
+      {ticket.status === "review" ? <ApprovalActions ticketId={ticket.id} /> : null}
     </div>
   );
 }
