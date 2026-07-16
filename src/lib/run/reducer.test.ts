@@ -76,3 +76,28 @@ describe("reduceRun", () => {
     expect(decided.pendingPermission).toBeNull();
   });
 });
+
+describe("reduceRun pendingIteration (gate-feedback checkpoint)", () => {
+  it("sets pendingIteration on gate-retry-projection", () => {
+    const view = reduceRun(initialRunView("run-p"), {
+      kind: "gate-retry-projection", seq: 1, at: "t", iteration: 2, projectedCostUsd: 0.05,
+    });
+    expect(view.pendingIteration).toEqual({ iteration: 2, projectedCostUsd: 0.05 });
+  });
+
+  it("keeps pendingIteration while transitioning INTO awaiting-iteration-approval", () => {
+    let view = reduceRun(initialRunView("run-p"), { kind: "gate-retry-projection", seq: 1, at: "t", iteration: 2, projectedCostUsd: 0.05 });
+    view = reduceRun(view, { kind: "phase-change", seq: 2, at: "t", from: "gates-running", to: "awaiting-iteration-approval" });
+    expect(view.pendingIteration).toEqual({ iteration: 2, projectedCostUsd: 0.05 });
+  });
+
+  it("clears pendingIteration on any other phase-change", () => {
+    let view = reduceRun(initialRunView("run-p"), { kind: "gate-retry-projection", seq: 1, at: "t", iteration: 2, projectedCostUsd: 0.05 });
+    view = reduceRun(view, { kind: "phase-change", seq: 2, at: "t", from: "awaiting-iteration-approval", to: "executing" });
+    expect(view.pendingIteration).toBeNull();
+  });
+
+  it("defaults pendingIteration to null", () => {
+    expect(initialRunView("run-p").pendingIteration).toBeNull();
+  });
+});

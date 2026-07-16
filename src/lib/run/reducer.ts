@@ -23,6 +23,13 @@ export interface RunView {
    * canonical event only carries a Bash command string.
    */
   pendingPermission: { requestId: string; command: string } | null;
+  /**
+   * The paused gate-feedback cost checkpoint the UI shows continue/stop
+   * buttons for, or null when the run is not at the before-iteration-2
+   * checkpoint. Set by `gate-retry-projection`; cleared by any phase-change
+   * that leaves `awaiting-iteration-approval`.
+   */
+  pendingIteration: { iteration: number; projectedCostUsd: number } | null;
 }
 
 export const ZERO_COST: CostRecord = {
@@ -42,13 +49,18 @@ export function initialRunView(runId: string): RunView {
     cost: ZERO_COST,
     lastMessage: "",
     pendingPermission: null,
+    pendingIteration: null,
   };
 }
 
 export function reduceRun(view: RunView, event: RunEvent): RunView {
   switch (event.kind) {
     case "phase-change":
-      return { ...view, state: event.to };
+      return {
+        ...view,
+        state: event.to,
+        pendingIteration: event.to === "awaiting-iteration-approval" ? view.pendingIteration : null,
+      };
     case "todo-update":
       return { ...view, todos: event.todos };
     case "message":
@@ -63,6 +75,8 @@ export function reduceRun(view: RunView, event: RunEvent): RunView {
       return { ...view, pendingPermission: { requestId: event.requestId, command: event.command } };
     case "permission-decision":
       return { ...view, pendingPermission: null };
+    case "gate-retry-projection":
+      return { ...view, pendingIteration: { iteration: event.iteration, projectedCostUsd: event.projectedCostUsd } };
     case "run-started":
     case "plan-proposed":
     case "plan-decision":
@@ -70,7 +84,6 @@ export function reduceRun(view: RunView, event: RunEvent): RunView {
     case "tool-use":
     case "tool-result":
     case "bash-command":
-    case "gate-retry-projection":
       // These variants either belong to later phases or do not change the
       // panel projection; the raw stream list still renders them.
       return view;

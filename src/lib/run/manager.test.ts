@@ -649,16 +649,14 @@ describe("startAgentRun gate-feedback loop (mocked SDK + mocked gates, no real A
     // two sealed sessions so far (initial + iteration 1), 0.01 each in the
     // default fake stream, total 0.02, / (iteration(=1) + 1) = 0.01.
     expect(projection?.projectedCostUsd).toBeCloseTo(0.01, 10);
-    // enabled in Task 9
-    // expect(handle.view.pendingIteration).toEqual({ iteration: 2, projectedCostUsd: projection?.projectedCostUsd });
+    expect(handle.view.pendingIteration).toEqual({ iteration: 2, projectedCostUsd: projection?.projectedCostUsd });
 
     handle.control?.resolveIteration("continue");
     await handle.done;
 
     expect(handle.run.iteration).toBe(2);
     expect(handle.run.state).toBe("completed");
-    // enabled in Task 9
-    // expect(handle.view.pendingIteration).toBeNull();
+    expect(handle.view.pendingIteration).toBeNull();
   });
 
   it("exits to completed on stop, leaving the failing gates shown", async () => {

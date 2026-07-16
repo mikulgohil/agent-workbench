@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { RunState, TodoStatus } from "@/lib/forge/types";
 import type { RunView } from "@/lib/run/reducer";
 import { formatCost, summarizeProgress } from "@/lib/ui/format";
+import { IterationCheckpoint } from "./iteration-checkpoint";
 
 const DECISIONS = ["allow", "always", "deny"] as const;
 type Decision = (typeof DECISIONS)[number];
@@ -53,7 +54,7 @@ function headline(state: RunState): string {
 }
 
 export function PlanProgressPanel({ view }: { view: RunView }): ReactElement {
-  const { pendingPermission } = view;
+  const { pendingPermission, pendingIteration } = view;
   const [sendingDecision, setSendingDecision] = useState<Decision | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -144,6 +145,13 @@ export function PlanProgressPanel({ view }: { view: RunView }): ReactElement {
             ))}
           </div>
         </div>
+      ) : null}
+      {pendingIteration ? (
+        <IterationCheckpoint
+          runId={view.runId}
+          iteration={pendingIteration.iteration}
+          projectedCostUsd={pendingIteration.projectedCostUsd}
+        />
       ) : null}
     </section>
   );
