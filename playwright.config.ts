@@ -17,6 +17,11 @@ export default defineConfig({
     env: {
       FORGE_PROJECT_DIR: FIXTURE_PROJECT,
       FORGE_SIM_DELAY_MS: "25",
+      // Force the simulator path regardless of the developer's ambient shell
+      // env - `next dev` runs with NODE_ENV=development (never "test"), so
+      // isRealEngineAvailable() would otherwise pick the real Agent SDK
+      // engine whenever ANTHROPIC_API_KEY happens to be set locally.
+      ANTHROPIC_API_KEY: "",
     },
   },
 });
