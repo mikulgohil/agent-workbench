@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeScratchDir } from "@/test/helpers";
 import {
   branchName,
+  changedFiles,
   commitAll,
   createWorktree,
   hasCommitsSinceBase,
@@ -105,5 +106,25 @@ describe("worktree module", () => {
     await writeFile(join(path, "README.md"), "hello\nedited\n", "utf8");
     await commitAll(path, "real work");
     expect(await hasCommitsSinceBase(path, "main")).toBe(true);
+  });
+
+  it("reports added, modified, and deleted files vs the base branch", async () => {
+    const { path } = await createWorktree(dir, "tkt-changed01", "Changed files", "main");
+    createdWorktrees.push(path);
+    // README.md exists on base; modify it, add a new file, delete nothing yet.
+    await writeFile(join(path, "README.md"), "hello\nchanged\n", "utf8");
+    await writeFile(join(path, "new.ts"), "export const x = 1;\n", "utf8");
+    await commitAll(path, "work: modify + add");
+
+    const touched = await changedFiles(path, "main");
+    const byPath = Object.fromEntries(touched.map((t) => [t.path, t.kind]));
+    expect(byPath["README.md"]).toBe("modified");
+    expect(byPath["new.ts"]).toBe("added");
+
+    // Now delete README and commit; it should read as deleted vs base.
+    await execFileAsync("git", ["rm", "-q", "README.md"], { cwd: path });
+    await execFileAsync("git", ["commit", "-q", "-m", "work: delete readme"], { cwd: path });
+    const afterDelete = await changedFiles(path, "main");
+    expect(afterDelete.find((t) => t.path === "README.md")?.kind).toBe("deleted");
   });
 });
