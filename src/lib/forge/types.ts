@@ -4,7 +4,8 @@
  * CANONICAL SOURCE: docs/blueprint/05-data-model.md.
  * Every name and field here matches that document exactly; later phases
  * extend this file with the remaining canonical types (RunSummary,
- * AuditEvent, Lesson, TaskTemplate, ...) instead of renaming anything.
+ * Lesson, TaskTemplate, ...) instead of renaming anything. AuditEvent
+ * was added in Phase 2 Task 9.
  *
  * Design notes:
  * - String-literal unions (not enums) keep every type JSON-serializable.
