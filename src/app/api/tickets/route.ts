@@ -1,9 +1,9 @@
-import { createTicket, initForge } from "@/lib/forge/store";
+import { createTicket, initForge, readForgeConfig } from "@/lib/forge/store";
 import { buildTicketDraft } from "@/lib/forge/ticket-draft";
 import { isTicketType } from "@/lib/forge/types";
 import { resolveIdentity } from "@/lib/identity";
 import { getProjectDir, getSimDelayMs } from "@/lib/project";
-import { startSimulatedRun } from "@/lib/run/manager";
+import { startRun } from "@/lib/run/manager";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +26,7 @@ export async function POST(req: Request): Promise<Response> {
     const projectDir = getProjectDir();
     await initForge(projectDir);
     const ticket = await createTicket(projectDir, draft, await resolveIdentity(projectDir));
-    const handle = startSimulatedRun(projectDir, ticket, { delayMs: getSimDelayMs() });
+    const handle = startRun(projectDir, ticket, await readForgeConfig(projectDir), { delayMs: getSimDelayMs() });
     return Response.json({ ticketId: ticket.id, runId: handle.run.id }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

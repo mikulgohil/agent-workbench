@@ -43,3 +43,38 @@ export function mapSdkMessage(message: SDKMessage, seq: number): RunEvent | null
 
   return null;
 }
+
+/**
+ * Maps ALL content blocks in one SDK frame to RunEvents. `mapSdkMessage`
+ * above only returns the FIRST matching block, silently dropping every
+ * later block in a multi-block assistant frame - e.g. text followed by
+ * one or more parallel tool_use calls, which real Claude sessions produce
+ * routinely. Non-assistant frames still produce at most one event (via
+ * `mapSdkMessage` itself), so behavior for those frame types is
+ * unchanged. Takes a `nextSeq` callback rather than a fixed seq because a
+ * single frame may need to consume more than one sequence number.
+ */
+export function mapSdkMessages(message: SDKMessage, nextSeq: () => number): RunEvent[] {
+  if (message.type !== "assistant") {
+    const event = mapSdkMessage(message, nextSeq());
+    return event ? [event] : [];
+  }
+
+  const at = new Date().toISOString();
+  const events: RunEvent[] = [];
+  for (const block of message.message.content) {
+    if (block.type === "text") {
+      events.push({ kind: "message", seq: nextSeq(), at, text: block.text });
+    } else if (block.type === "tool_use") {
+      events.push({
+        kind: "tool-use",
+        seq: nextSeq(),
+        at,
+        toolUseId: block.id,
+        toolName: block.name,
+        input: block.input as Record<string, unknown>,
+      });
+    }
+  }
+  return events;
+}

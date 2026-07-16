@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTicket, initForge, readTicket } from "@/lib/forge/store";
 import * as store from "@/lib/forge/store";
-import type { RunEvent, Ticket } from "@/lib/forge/types";
+import type { ForgeConfig, RunEvent, Ticket } from "@/lib/forge/types";
+import { DEFAULT_FORGE_CONFIG } from "@/lib/forge/store";
 import { makeScratchDir } from "@/test/helpers";
 import {
   findLatestRunForTicket,
   getRun,
   resetRunRegistry,
+  startRun,
   startSimulatedRun,
   subscribe,
 } from "./manager";
@@ -89,5 +91,34 @@ describe("run manager", () => {
     expect(getRun(first.run.id)?.run.id).toBe(first.run.id);
     expect(getRun("run-nope")).toBeNull();
     expect(findLatestRunForTicket(ticket.id)?.run.id).toBe(second.run.id);
+  });
+});
+
+describe("startRun engine seam", () => {
+  let dir: string;
+  let cleanup: () => Promise<void>;
+  let ticket: Ticket;
+
+  beforeEach(async () => {
+    resetRunRegistry();
+    ({ dir, cleanup } = await makeScratchDir());
+    await initForge(dir);
+    ticket = await createTicket(
+      dir,
+      { type: "generic", title: "Seam check", inputs: { prompt: "Seam check" }, jiraRef: null, source: "manual" },
+      DEV,
+    );
+  });
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  it("delegates to the simulator when the real engine is unavailable (no ANTHROPIC_API_KEY / NODE_ENV=test)", async () => {
+    const config: ForgeConfig = DEFAULT_FORGE_CONFIG;
+    const handle = startRun(dir, ticket, config);
+    await handle.done;
+    expect(handle.run.state).toBe("completed");
+    expect(handle.run.sessionId).toMatch(/^sim-session-/);
   });
 });

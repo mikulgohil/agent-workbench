@@ -147,10 +147,11 @@ export async function setTicketStatus(
   projectDir: string,
   ticketId: string,
   status: TicketStatus,
+  patch: Partial<Pick<Ticket, "branchName">> = {},
 ): Promise<Ticket> {
   const ticket = await readTicket(projectDir, ticketId);
   if (!ticket) throw new Error(`ticket not found: ${ticketId}`);
-  const updated: Ticket = { ...ticket, status, updatedAt: nowIso() };
+  const updated: Ticket = { ...ticket, ...patch, status, updatedAt: nowIso() };
   await writeTicket(projectDir, updated);
   return updated;
 }
