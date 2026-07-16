@@ -1,5 +1,5 @@
 import picomatch from "picomatch";
-import { basename } from "path";
+import { basename } from "node:path";
 
 /**
  * Checked twice by design (docs/blueprint/02-agent-sdk-guide.md section 9):
